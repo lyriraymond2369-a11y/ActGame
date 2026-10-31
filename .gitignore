@@ -1,0 +1,27 @@
+# ---------- UE 生成物 ----------
+Binaries/
+Build/
+DerivedDataCache/
+Intermediate/
+Saved/
+.vs/
+*.sln
+*.suo
+*.VC.db
+*.opensdf
+*.sdf
+
+# ---------- 第三方美术资源（7.7 GB，用 Fab 重新下载即可，不入库）----------
+Content/ParagonMinions/
+Content/SoulCave/
+Content/ThirdParty/
+Content/FreeSword_Animation/
+Content/SampleAnimationPack/
+Content/Fab/
+
+# ---------- 引擎 / 个人临时 ----------
+Content/Developers/
+Content/Collections/
+
+# ---------- 旧仓库备份 ----------
+_git_backup/
