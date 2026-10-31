@@ -10,7 +10,6 @@
 
 ```
 接口名与其实现的组件名相同
-
 ```
 
 ## 1，CharacterBase（角色基类）
@@ -20,6 +19,7 @@
 | BPC_Attribute      | 角色属性      |
 | BPC_CombatFeedBack | 角色攻击音效，顿帧 |
 | BPC_Motor          | 角色运动层控制   |
+
 ### 1）类接口方法
 
 #### （1）BPI_CharacterBase
@@ -31,19 +31,18 @@
 | GetCharacterMovement       | /   | 角色移动组件                 | 获取角色的移动组件                 |
 | GetMotorComponent          | /   | BPC_Motor对象引用          | 获取角色的BPC_Motor对象          |
 
-
 #### （2）BPI_Attribute
 
-| 方法名             | 输入                                | 输出                | 作用                                     |
-| --------------- | --------------------------------- | ----------------- | -------------------------------------- |
-| GetAttack       | /                                 | float             | 获取角色的攻击值（包括武器基础加成）                     |
-| TakeDamage      | float，float                       | bool（是否击破韧性）      | 对角色施加伤害，并返回是否破韧                        |
-| AddBonus        | float                             | /                 | 添加武器加成                                 |
-| GetDefense      | /                                 | float（0~1）        | 获取角色减伤                                 |
-| GetPoiseAttack  | /                                 | float             | 获取角色的削轫值（包括武器基础加成）                     |
-| IsDead          | /                                 | bool              | 角色是否死亡                                 |
-| ReceiveDamage   | ST_AttackData，float，Vector3，float | E_HitOutCome，bool | 根据攻击的数据，基础伤害值，基础削轫值，受击位置，返回受击类型和是否完美格挡 |
-| ClearPoseBroken | /                                 | /                 | 清除削轫破防效果                               |
+| 方法名             | 输入                                | 输出                     | 作用                                            |
+| --------------- | --------------------------------- | ---------------------- | --------------------------------------------- |
+| GetAttack       | /                                 | float                  | 获取角色的攻击值（包括武器基础加成）                            |
+| TakeDamage      | float，float                       | bool（是否击破韧性）           | 对角色施加伤害，并返回是否破韧                               |
+| AddBonus        | float                             | /                      | 添加武器加成                                        |
+| GetDefense      | /                                 | float（0~1）             | 获取角色减伤                                        |
+| GetPoiseAttack  | /                                 | float                  | 获取角色的削轫值（包括武器基础加成）                            |
+| IsDead          | /                                 | bool                   | 角色是否死亡                                        |
+| ReceiveDamage   | ST_AttackData，float，Vector3，float | E_HitOutCome，bool，bool | 根据攻击的数据，基础伤害值，基础削轫值，受击位置，返回受击类型和是否完美格挡，以及是否破韧 |
+| ClearPoseBroken | /                                 | /                      | 清除削轫破防效果                                      |
 
 #### （3）BPI_CombatFeedBack
 
@@ -61,7 +60,6 @@
 | SetMotionProfile | ST_MotionProfile | /   | 设置代码位移的基础变量      |
 | StartMotion      | /                | /   | 开始代码位移           |
 | StopMotion       | /                | /   | 停止代码位移           |
-
 
 ### 2）数据类型
 
@@ -92,27 +90,28 @@
 | Right | 右边   |
 
 #### （2）结构体
+
 ##### 一，ST_AttackData
 
-| 值名               | 类型           | 默认值     | 含义                           |
-| ---------------- | ------------ | ------- | ---------------------------- |
-| ID               | name         | none    | 动作名（我感觉可有可无）                 |
-| Montage          | 动画蒙太奇        | none    | 动作播放的montage                 |
-| SectionStart     | name         | none    | montage开始播放的片段               |
-| Next             | ST_Edge数组    | none    | 下一个动作名以及进入所需的操作              |
-| CancelStart      | float        | 0       | 取消窗口打开的时间（我感觉可有可无）           |
-| DamageRate       | float        | 0       | 伤害倍率                         |
-| PoiseDdamageRate | float        | 0       | 削轫倍率                         |
-| HitStop          | float        | 0       | 顿帧时长                         |
-| LaunchEnemy      | Vector3      | （0，0，0） | 命中敌人时对敌人的力                   |
-| CanUseInAir      | bool         | false   | 是否可以在空中使用                    |
-| PlayGravity      | float        | 1       | 使用时角色的重力                     |
-| LaunchSelf       | Vector3      | （0，0，0） | 命中敌人时对自己的力                   |
-| MotionSelf       | Vector3      | （0，0，0） | xy表示角色在播放改动作时位移方向，z表示对角色向上的力 |
-| MoveSpeed        | float        | 600     | 角色在水平上的移动速度（大于610才有代码位移）     |
-| MoveFriction     | float        | 8       | 移动时角色摩擦力                     |
-| bLockPelvisZ     | bool         | false   | 是否锁定角色的Pelvis骨骼的z坐标          |
-| AttackType       | E_AttackType | Common  | 动作的攻击类型                      |
+| 值名              | 类型           | 默认值     | 含义                           |
+| --------------- | ------------ | ------- | ---------------------------- |
+| ID              | name         | none    | 动作名（我感觉可有可无）                 |
+| Montage         | 动画蒙太奇        | none    | 动作播放的montage                 |
+| SectionStart    | name         | none    | montage开始播放的片段               |
+| Next            | ST_Edge数组    | none    | 下一个动作名以及进入所需的操作              |
+| CancelStart     | float        | 0       | 取消窗口打开的时间（我感觉可有可无）           |
+| DamageRate      | float        | 0       | 伤害倍率                         |
+| PoiseDamageRate | float        | 0       | 削轫倍率                         |
+| HitStop         | float        | 0       | 顿帧时长                         |
+| LaunchEnemy     | Vector3      | （0，0，0） | 命中敌人时对敌人的力                   |
+| CanUseInAir     | bool         | false   | 是否可以在空中使用                    |
+| PlayGravity     | float        | 1       | 使用时角色的重力                     |
+| LaunchSelf      | Vector3      | （0，0，0） | 命中敌人时对自己的力                   |
+| MotionSelf      | Vector3      | （0，0，0） | xy表示角色在播放改动作时位移方向，z表示对角色向上的力 |
+| MoveSpeed       | float        | 600     | 角色在水平上的移动速度（大于610才有代码位移）     |
+| MoveFriction    | float        | 8       | 移动时角色摩擦力                     |
+| bLockPelvisZ    | bool         | false   | 是否锁定角色的Pelvis骨骼的z坐标          |
+| AttackType      | E_AttackType | Common  | 动作的攻击类型                      |
 
 ##### 二，ST_Edge
 
@@ -158,7 +157,6 @@
 | IntoHardLockState       | /    | /                      | 进入硬锁                      |
 | OutHardLockState        | /    | /                      | 退出硬锁                      |
 | SetLockPlevisZ          | bool | /                      | 设置是否锁定Plevis骨骼的z位置        |
-
 
 #### （2）BPI_ActionState
 
@@ -266,6 +264,7 @@
 | --------------- | --------- |
 | BPC_AI          | 敌人AI控制器控制 |
 | BPC_AttackTrace | 敌人角色动作控制  |
+
 ### 1）类接口方法
 
 #### （1）BPI_EnemyBase

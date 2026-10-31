@@ -25,3 +25,7 @@ Content/Collections/
 
 # ---------- 旧仓库备份 ----------
 _git_backup/
+
+# ---------- Obsidian（本地编辑器配置，不入库）----------
+.obsidian/
+*.base
