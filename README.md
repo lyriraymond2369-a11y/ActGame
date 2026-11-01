@@ -4,7 +4,7 @@
 
 本文件是项目内「组件 / 接口 / 数据结构」的速查表，写蓝图前先对一遍。
 
-> **校对说明**：本文件已按 `Content/` 下的实际资产重新扫描校对（共 16 个 `BPI_`*、10 个 `E_`*、2 个 `ST_*`）。
+> **校对说明**：本文件已按 `Content/` 下的实际资产重新扫描校对（共 15 个 `BPI_`*、10 个 `E_`*、3 个 `ST_*`）。
 > **接口函数清单以蓝图编辑器「我的蓝图 → 函数」面板为准** —— UE 的 name table 会保留已删除函数的 FName 条目，直接扫二进制会把历史函数误报成现存函数。
 > 与旧版不一致的地方统一记在文末的「七、校对差异清单」里，方便逐条确认。
 
@@ -21,23 +21,22 @@
 | 接口                       | 目录                                 | 函数数 | 对应实现               |
 | ------------------------ | ---------------------------------- | --- | ------------------ |
 | BPI_CharacterBase        | Code/Interface                     | 8   | 无（纯接口，所有组件获取的统一入口） |
-| BPI_Attribute            | Code/ActorComponent/DamageSystem   | 12  | BPC_Attribute      |
+| BPI_Attribute            | Code/ActorComponent/Attribute      | 12  | BPC_Attribute      |
 | BPI_CombatFeedBack       | Code/ActorComponent/CombatFeedBack | 3   | BPC_CombatFeedBack |
 | BPI_Motor                | Code/ActorComponent/Motor          | 8   | BPC_Motor          |
 | BPI_WeaponBase           | Code/Weapon                        | 2   | BP_WeaponBase      |
 | BPI_GameState            | Code/GameState                     | 3   | 待接入                |
-| BPI_HIt                  | Code/Interface                     | 1   | 待接入                |
 | BPI_Player               | Player                             | 9   | BP_Player          |
 | BPI_ActionState          | Player/Component/ActionState       | 7   | BPC_ActionState    |
 | BPI_BufferInput          | Player/Component/BufferInput       | 3   | BPC_BufferInput    |
 | BPI_CameraDirector       | Player/Component/CameraDirector    | 1   | BPC_CameraDirector |
-| BPI_Combat               | Player/Component/Combat            | 8   | BPC_Combat         |
+| BPI_Combat               | Player/Component/Combat            | 7   | BPC_Combat         |
 | BPI_LockOn               | Player/Component/LockOn            | 6   | BPC_LockOn         |
 | BPI_EnemyBase            | Enemy                              | 2   | BP_EnemyBase       |
 | BPI_AttackTrace          | Enemy/Component/AttackTrace        | 2   | BPC_AttackTrace    |
 | BPI_AI                   | Enemy/Component/AI                 | 9   | BPC_AI             |
 
-合计 84 个接口函数。
+合计 82 个接口函数。
 
 ---
 
@@ -267,9 +266,12 @@ SetState         不用判断   —— 复位收尾
 | DoJump           | /    | /             | 操作跳跃           |
 | DoDodge          | /    | /             | 操作冲刺           |
 | GetCurrentAttack | /    | ST_AttackData | 获取当前动作的数据      |
-| OnAttackWindow   | bool | /             | 开关攻击窗口         |
-| MoveStart        | /    | /             | 招式位移开始         |
-| MoveEnd          | /    | /             | 招式位移结束         |
+| OnAttackWindow   | bool | /             | 开关攻击窗口（由 ANS_AttackWindow 触发） |
+| EnterHit         | E_ActionState，E_HitDirection | /   | 进入受击处理（由 Attribute 的 OnDamageApplied 触发） |
+
+> **位移不再经过 Combat。** `ANS_Move` 直接调 `BPI_Motor.StartMotion` / `StopMotion`，
+> Combat 只负责在动作开始时用 `SetMotionProfile` 下发速度和方向。
+> 原先的 `MoveStart` / `MoveEnd` 两个纯转发函数已删除。
 
 #### （6）BPI_LockOn
 
@@ -425,11 +427,9 @@ SetState         不用判断   —— 复位收尾
 | RemoveToken | Actor（Holder） | /    | 移除持有者的令牌  |
 | HasToken    | Actor（Holder） | bool | 查询持有者是否有令牌 |
 
-### （2）BPI_HIt（Code/Interface）
+### （2）BPI_HIt
 
-| 方法名      | 输入                             | 输出  | 作用      |
-| -------- | ------------------------------ | --- | ------- |
-| EnterHit | E_ActionState（HitType），Vector（HitLoc） | /   | 进入受击处理 |
+**已删除。`EnterHit` 已合并进 `BPI_Combat`，签名改为 `EnterHit(E_ActionState HitType, E_HitDirection HitLoc)`。**
 
 ### （3）BPI_Interaction
 
@@ -446,11 +446,41 @@ SetState         不用判断   —— 复位收尾
 ② 伤害规则全部收在 BPC_Attribute
    无敌、完美格挡、完美闪避、减伤、削轫、破韧都在这一个地方判定
 
-③ 副作用全部由 BPC_Combat 下发
-   Motor 的位移、Attribute 的伤害、CombatFeedBack 的反馈，Combat 是唯一的发起者
+③ 战斗层负责「用什么参数」，动画通知负责「什么时候」
+   Combat → SetMotionProfile / 调 ReceiveDamage / 调 PlayHitFeedback
+   通知   → Motor.StartMotion / StopMotion（位移窗口和动画帧对齐）
+   Motor  → 只执行，不判断该不该动
+
+   位移**不**经过 Combat。ANS_Move 直连 BPI_Motor
 ```
 
 `BPC_CombatFeedBack` **内部再调** `BPC_CameraDirector.Shake`**，Combat 不直接碰 CameraDirector。**
+
+---
+
+## 6.1，玩家侧动画通知与职责
+
+| 通知 | 类型 | 调用的接口 | 职责 |
+| --- | -- | ----- | -- |
+| `ANS_AttackWindow` | NotifyState | `BPI_Combat.OnAttackWindow(bool)` | 开合攻击判定窗口，驱动 AttackTrace 的命中检测 |
+| `ANS_Move` | NotifyState | `BPI_Motor.StartMotion` / `StopMotion` | 开合代码位移窗口 |
+| `ANS_LandCheck` | NotifyState | 自有逻辑（不经过 Combat） | 落地检测 |
+| `AN_Cancel` | Notify | 目前**未接** `SetCancelWindow` | 取消窗口时机改由 `ST_AttackData.CancelStart` 数据驱动 |
+
+**三个要点：**
+
+```
+① 通知统一走 BPI_CharacterBase → GetMotorComponent / GetCombatComponent
+   Cast 目标是基类接口，不 Cast To BPI_Player
+   → 敌人挂同一套通知也不用改
+
+② 位移窗口由通知控制，不是「整个蒙太奇都在动」
+   → 前摇不会提前滑出去，位移只发生在配了 ANS_Move 的那一段
+
+③ AN_Cancel 目前是空壳
+   取消窗口由 Combat 按 CancelStart 自己开合
+   要么删掉这个通知，要么改成让它调 SetCancelWindow —— 别两边都做
+```
 
 ---
 
@@ -471,10 +501,14 @@ SetState         不用判断   —— 复位收尾
 | 7   | BPI_EnemyBase               | 5 个函数                | **实际 2 个**：`GetMesh` / `GetHitBox` / `GetEnemyAttributeComponent` 已上收到 `BPI_CharacterBase`                                   |
 | 8   | BPI_AI                      | 7 个函数                | 实际 9 个，补 `AI_SetAIState` / `HandleDamageApplied`                                                                             |
 | 9   | BPI_LockOn                  | 5 个函数                | 实际 6 个，补 `GetTarget`                                                                                                         |
-| 10  | BPI_Combat                  | 7 个函数                | 实际 8 个：**没有** `ClearAttackData`，新增 `MoveStart` / `MoveEnd`                                                                   |
+| 10  | BPI_Combat                  | 7 个函数                | **实际 7 个**：**没有** `ClearAttackData`；`MoveStart` / `MoveEnd` 已删除（位移改由 `ANS_Move` 直连 Motor）；新增 `EnterHit` |
 | 11  | E_AIState                   | 4 个值                 | 实际 7 个，补 `HitLight` / `HitHeavy` / `KnockDown`                                                                               |
 | 12  | ST_AttackData               | 写作 `PoiseDamageRate` | 资产里是 `PoiseDdamageRate`（多一个 d）                                                                                               |
-| 13  | 缺失整节                        | 无                    | 补 `BPI_GameState` / `BPI_HIt` / `E_EnemyAttackType`                                                                          |
+| 13  | 缺失整节                        | 无                    | 补 `BPI_GameState` / `E_EnemyAttackType`                                                                                      |
+| 14  | BPI_HIt                     | 1 个函数（EnterHit）        | **已删除**，`EnterHit` 合并进 `BPI_Combat`，签名改为 `(E_ActionState HitType, E_HitDirection HitLoc)`                                 |
+| 15  | BPI_Combat.MoveStart/MoveEnd | 2 个函数                | **已删除**，`ANS_Move` 改为直连 `BPI_Motor.StartMotion` / `StopMotion`                                                              |
+| 16  | AN_MoveEnd                  | 独立通知                 | **已删除**。`ANS_Move` 的 NotifyEnd 已负责收尾，该通知与它重复                                                                               |
+| 17  | BPI_Attribute / BPC_Attribute | Code/ActorComponent/DamageSystem | 已迁到 `Code/ActorComponent/Attribute`                                                                                    |
 
 ### 需要在编辑器里处理的遗留问题
 
@@ -509,4 +543,14 @@ SetState         不用判断   —— 复位收尾
    UE 保存蓝图后，name table 里仍保留已删除函数的 FName。
    直接 grep .uasset 会搜到 GetMesh / GetHitBox 这类历史名字，误判为"函数还在"。
    确认接口函数一律以编辑器「我的蓝图 → 函数」面板为准
+
+⑧ BPI_Combat.EnterHit 的参数名和类型不一致
+   实际签名：EnterHit(HitType : E_ActionState, HitLoc : E_HitDirection)
+   第二个参数类型已经是「方向」了，但 pin 名还叫 HitLoc（位置）
+   建议改名为 HitDirection，否则读代码的人会以为要传坐标
+
+⑨ AN_Cancel 尚未接入 SetCancelWindow
+   取消窗口现在由 Combat 按 ST_AttackData.CancelStart 数据驱动
+   AN_Cancel 只引用了 ActionState、没调 SetCancelWindow
+   要么删掉这个通知，要么改成让它调 SetCancelWindow，别两边并存
 ```
