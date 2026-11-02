@@ -10,6 +10,50 @@
 
 ---
 
+## 目录
+
+- [0，接口总览](#0接口总览) —— 全部接口与函数数的总表，找不到东西先看这里
+- [1，CharacterBase（角色基类）](#1characterbase角色基类)
+    - [1）CharacterBase 类接口方法](#1characterbase-类接口方法)
+        - [BPI_CharacterBase](#1bpi_characterbase)
+        - [BPI_Attribute](#2bpi_attribute)
+        - [BPI_CombatFeedBack](#3bpi_combatfeedback)
+        - [BPI_Motor](#4bpi_motor)
+    - [2）CharacterBase 数据类型](#2characterbase-数据类型)
+        - [CharacterBase 枚举](#1characterbase-枚举)
+        - [结构体](#2结构体)
+- [2，Player（玩家特有）](#2player玩家特有继承于-characterbase)
+    - [1）Player 类接口方法](#1player-类接口方法)
+        - [BPI_Player](#1bpi_player)
+        - [BPI_ActionState](#2bpi_actionstate)
+        - [BPI_BufferInput](#3bpi_bufferinput)
+        - [BPI_CameraDirector](#4bpi_cameradirector)
+        - [BPI_Combat](#5bpi_combat)
+        - [BPI_LockOn](#6bpi_lockon)
+    - [2）Player 数据类型](#2player-数据类型)
+        - [Player 枚举](#1player-枚举)
+- [3，EnemyBase（敌人角色基类）](#3enemybase敌人角色基类继承于-characterbase)
+    - [1）EnemyBase 类接口方法](#1enemybase-类接口方法)
+        - [BPI_EnemyBase](#1bpi_enemybase)
+        - [BPI_AttackTrace](#2bpi_attacktrace)
+        - [BPI_AI](#3bpi_ai)
+    - [2）EnemyBase 数据类型](#2enemybase-数据类型)
+        - [EnemyBase 枚举](#1enemybase-枚举)
+- [4，WeaponBase（武器基类）](#4weaponbase武器基类)
+    - [1）WeaponBase 类接口方法](#1weaponbase-类接口方法)
+        - [BPI_WeaponBase](#1bpi_weaponbase)
+- [5，其他独立接口](#5其他独立接口)
+    - [BPI_GameState](#1bpi_gamestatecodegamestate)
+    - [BPI_HIt（已删除）](#2bpi_hit)
+    - [BPI_Interaction（已删除）](#3bpi_interaction)
+- [6，写蓝图时的三条硬规矩](#6写蓝图时的三条硬规矩) —— 分层约定，动手前先读
+- [6.1，动画通知与职责](#61玩家侧动画通知与职责) —— 四个动画通知分别调谁
+- [七、校对差异清单](#七校对差异清单)
+    - [已修正的文档错误](#已修正的文档错误)
+    - [需要在编辑器里处理的遗留问题](#需要在编辑器里处理的遗留问题)
+
+---
+
 # 注：
 
 ```
@@ -48,7 +92,7 @@
 | BPC_CombatFeedBack | 角色攻击音效，顿帧 |
 | BPC_Motor          | 角色运动层控制   |
 
-### 1）类接口方法
+### 1）CharacterBase 类接口方法
 
 #### （1）BPI_CharacterBase
 
@@ -68,20 +112,20 @@
 
 #### （2）BPI_Attribute
 
-| 方法名             | 输入                                             | 输出                                     | 作用                                              |
-| --------------- | ---------------------------------------------- | -------------------------------------- | ----------------------------------------------- |
-| GetAttack       | /                                              | float（Attack）                          | 获取角色的攻击值（包括武器基础加成）                              |
-| GetDefense      | /                                              | float（Defenses，0~1）                    | 获取角色减伤                                          |
-| GetPoiseAttack  | /                                              | float（PoiseAttack）                     | 获取角色的削轫值（包括武器基础加成）                              |
-| AddBonus        | float（AttackDelta）                            | /                                      | 添加武器加成                                          |
-| IsDead          | /                                              | bool（Dead）                             | 角色是否死亡                                          |
-| TakeDamage      | float（BaseDamage），float（PoiseDamage）          | bool（bIsBroken）                        | 扣血扣韧，返回是否破韧。**内部不再乘防御**                        |
-| ReceiveDamage   | ST_AttackData，float，Vector3，float             | E_HitOutCome，bool，bool                 | 完整受击判定：攻击数据、基础伤害、受击位置、基础削轫 → 受击类型、是否完美格挡、是否完美闪避 |
-| ClearPoseBroken | /                                              | /                                      | 清除削轫破防效果                                        |
-| RestorePoise    | /                                              | /                                      | 恢复韧性到 MaxPoise（Tick 里调用）                       |
-| EnterGuard      | /                                              | /                                      | 进入格挡：置 bIsGuarding，记录 LastGuardTime          |
-| ExitGuard       | /                                              | /                                      | 退出格挡                                            |
-| NotifyDodgeStart | float（Time）                                  | /                                      | 记录闪避起手时刻，供完美闪避无敌帧判定使用                          |
+| 方法名              | 输入                                   | 输出                     | 作用                                              |
+| ---------------- | ------------------------------------ | ---------------------- | ----------------------------------------------- |
+| GetAttack        | /                                    | float（Attack）          | 获取角色的攻击值（包括武器基础加成）                              |
+| GetDefense       | /                                    | float（Defenses，0~1）    | 获取角色减伤                                          |
+| GetPoiseAttack   | /                                    | float（PoiseAttack）     | 获取角色的削轫值（包括武器基础加成）                              |
+| AddBonus         | float（AttackDelta）                   | /                      | 添加武器加成                                          |
+| IsDead           | /                                    | bool（Dead）             | 角色是否死亡                                          |
+| TakeDamage       | float（BaseDamage），float（PoiseDamage） | bool（bIsBroken）        | 扣血扣韧，返回是否破韧。**内部不再乘防御**                         |
+| ReceiveDamage    | ST_AttackData，float，Vector3，float    | E_HitOutCome，bool，bool | 完整受击判定：攻击数据、基础伤害、受击位置、基础削轫 → 受击类型、是否完美格挡、是否完美闪避 |
+| ClearPoseBroken  | /                                    | /                      | 清除削轫破防效果                                        |
+| RestorePoise     | /                                    | /                      | 恢复韧性到 MaxPoise（Tick 里调用）                        |
+| EnterGuard       | /                                    | /                      | 进入格挡：置 bIsGuarding，记录 LastGuardTime             |
+| ExitGuard        | /                                    | /                      | 退出格挡                                            |
+| NotifyDodgeStart | float（Time）                          | /                      | 记录闪避起手时刻，供完美闪避无敌帧判定使用                           |
 
 `ReceiveDamage` **的三个输出含义：**
 
@@ -124,9 +168,9 @@
 | SetGravity         | float（Scale）               | /    | 设置重力倍率           |
 | ResetGravity       | /                           | /    | 重力恢复默认值          |
 
-### 2）数据类型
+### 2）CharacterBase 数据类型
 
-#### （1）枚举
+#### （1）CharacterBase 枚举
 
 ##### 一，E_AttackType（攻击类型）
 
@@ -203,35 +247,35 @@
 | BPC_Combat         | 玩家角色动作控制 |
 | BPC_LockOn         | 玩家索敌控制   |
 
-### 1）类接口方法
+### 1）Player 类接口方法
 
 #### （1）BPI_Player
 
-| 方法名                     | 输入   | 输出                     | 作用                |
-| ----------------------- | ---- | ---------------------- | ----------------- |
-| GetActionStateComponent | /    | BPC_ActionState 对象引用    | 获取 BPC_ActionState |
-| GetCombatComponent      | /    | BPC_Combat 对象引用         | 获取 BPC_Combat      |
-| GetBufferInputComponent | /    | BPC_BufferInput 对象引用    | 获取 BPC_BufferInput |
-| GetDirectorComponent    | /    | BPC_CameraDirector 对象引用 | 获取 BPC_CameraDirector |
-| GetLockComponent        | /    | BPC_LockOn 对象引用         | 获取 BPC_LockOn      |
-| StartJump               | /    | /                      | 让角色跳跃             |
-| IntoHardLockState       | /    | /                      | 进入硬锁              |
-| OutHardLockState        | /    | /                      | 退出硬锁              |
-| SetLockPlevisZ          | bool | /                      | 设置是否锁定 Plevis 骨骼的 z 位置 |
+| 方法名                     | 输入   | 输出                      | 作用                     |
+| ----------------------- | ---- | ----------------------- | ---------------------- |
+| GetActionStateComponent | /    | BPC_ActionState 对象引用    | 获取 BPC_ActionState     |
+| GetCombatComponent      | /    | BPC_Combat 对象引用         | 获取 BPC_Combat          |
+| GetBufferInputComponent | /    | BPC_BufferInput 对象引用    | 获取 BPC_BufferInput     |
+| GetDirectorComponent    | /    | BPC_CameraDirector 对象引用 | 获取 BPC_CameraDirector  |
+| GetLockComponent        | /    | BPC_LockOn 对象引用         | 获取 BPC_LockOn          |
+| StartJump               | /    | /                       | 让角色跳跃                  |
+| IntoHardLockState       | /    | /                       | 进入硬锁                   |
+| OutHardLockState        | /    | /                       | 退出硬锁                   |
+| SetLockPlevisZ          | bool | /                       | 设置是否锁定 Plevis 骨骼的 z 位置 |
 
 > `GetMesh`、`GetHitBox`、`GetWeapon`、`GetAttributeComponent`、`GetCharacterMovement` **已全部上收到** `BPI_CharacterBase`，玩家侧不再各自声明。写蓝图时统一走基类接口。
 
 #### （2）BPI_ActionState
 
-| 方法名             | 输入                   | 输出              | 作用                                |
-| --------------- | -------------------- | --------------- | --------------------------------- |
-| TryEnterState   | E_ActionState（NewState） | bool            | 一级状态转换：走转场矩阵与受控状态优先级。**永远不能回 Locomotion** |
-| ForceEnterState | E_ActionState（NewState） | bool            | 二级状态转换：连招续接。需取消窗口打开，不受控状态下一律无效    |
-| SetState        | E_ActionState（NewState） | /               | 收尾复位，无校验、幂等。**唯一能回 Locomotion 的入口** |
-| GetActionState  | /                    | E_ActionState   | 获取角色当前状态                          |
-| SetCancelWindow | bool                 | /               | 开关取消窗口。只允许 Combat 与动画通知调用         |
-| CanDodge        | /                    | bool            | 当前是否可以冲刺（受 CD 与非受控状态约束）            |
-| UpdateDodgeCD   | float（Time）          | /               | 记录冲刺起手时刻，用于 CD 判定                  |
+| 方法名             | 输入                      | 输出            | 作用                                        |
+| --------------- | ----------------------- | ------------- | ----------------------------------------- |
+| TryEnterState   | E_ActionState（NewState） | bool          | 一级状态转换：走转场矩阵与受控状态优先级。**永远不能回 Locomotion** |
+| ForceEnterState | E_ActionState（NewState） | bool          | 二级状态转换：连招续接。需取消窗口打开，不受控状态下一律无效            |
+| SetState        | E_ActionState（NewState） | /             | 收尾复位，无校验、幂等。**唯一能回 Locomotion 的入口**       |
+| GetActionState  | /                       | E_ActionState | 获取角色当前状态                                  |
+| SetCancelWindow | bool                    | /             | 开关取消窗口。只允许 Combat 与动画通知调用                 |
+| CanDodge        | /                       | bool          | 当前是否可以冲刺（受 CD 与非受控状态约束）                   |
+| UpdateDodgeCD   | float（Time）             | /             | 记录冲刺起手时刻，用于 CD 判定                         |
 
 **三个转换入口的分工：**
 
@@ -275,32 +319,32 @@ SetState         不用判断   —— 复位收尾
 
 #### （6）BPI_LockOn
 
-| 方法名              | 输入  | 输出            | 作用          |
-| ---------------- | --- | ------------- | ----------- |
-| GetFocusTarget   | /   | Actor         | 获取当前锁定的对象   |
-| GetTarget        | /   | Actor         | 获取候选/当前目标   |
-| GetLockState     | /   | E_LockOnState | 获取当前锁定状态    |
-| HardLockPress    | /   | /             | 硬锁键按下       |
-| HardLockRelease  | /   | /             | 硬锁键松开       |
-| SimpleAimCorrect | /   | /             | 软锁下修正角色朝向   |
+| 方法名              | 输入  | 输出            | 作用        |
+| ---------------- | --- | ------------- | --------- |
+| GetFocusTarget   | /   | Actor         | 获取当前锁定的对象 |
+| GetTarget        | /   | Actor         | 获取候选/当前目标 |
+| GetLockState     | /   | E_LockOnState | 获取当前锁定状态  |
+| HardLockPress    | /   | /             | 硬锁键按下     |
+| HardLockRelease  | /   | /             | 硬锁键松开     |
+| SimpleAimCorrect | /   | /             | 软锁下修正角色朝向 |
 
-### 2）数据类型
+### 2）Player 数据类型
 
-#### （1）枚举
+#### （1）Player 枚举
 
 ##### 一，E_ActionState
 
-| 枚举值        | 枚举含义         |
-| ---------- | ------------ |
+| 枚举值        | 枚举含义                     |
+| ---------- | ------------------------ |
 | Locomotion | 一般状态（最低级，回它只能走 SetState） |
-| Jump       | 跳跃状态（含下落）    |
-| Attack     | 攻击状态         |
-| Dodge      | 冲刺状态         |
-| Guard      | 格挡状态         |
-| HitLight   | 轻受击（受控）      |
-| HitHeavy   | 重受击（受控）      |
-| KnockDown  | 倒地（受控）       |
-| Dead       | 死亡（受控，绝对终态）  |
+| Jump       | 跳跃状态（含下落）                |
+| Attack     | 攻击状态                     |
+| Dodge      | 冲刺状态                     |
+| Guard      | 格挡状态                     |
+| HitLight   | 轻受击（受控）                  |
+| HitHeavy   | 重受击（受控）                  |
+| KnockDown  | 倒地（受控）                   |
+| Dead       | 死亡（受控，绝对终态）              |
 
 ##### 二，E_CameraShakeType（屏幕抖动类型）
 
@@ -348,7 +392,7 @@ SetState         不用判断   —— 复位收尾
 | BPC_AttackTrace | 敌人攻击判定    |
 | BPC_Attribute   | 复用 CharacterBase 的属性组件 |
 
-### 1）类接口方法
+### 1）EnemyBase 类接口方法
 
 #### （1）BPI_EnemyBase
 
@@ -368,45 +412,39 @@ SetState         不用判断   —— 复位收尾
 
 #### （3）BPI_AI
 
-| 方法名                     | 输入                     | 输出        | 作用                |
-| ----------------------- | ---------------------- | --------- | ----------------- |
-| AI_AddPerceivedActor    | Actor                  | /         | 添加感受到的对象          |
-| AI_RemovePerceivedActor | Actor                  | /         | 从感受列表中删除对象        |
-| AI_GetCurrentTarget     | /                      | Actor     | 获取当前锁定的对象         |
-| AI_RefreshTarget        | /                      | /         | 重算并写入黑板 TargetActor |
-| AI_GetAIState           | /                      | E_AIState | 获取当前 AI 状态        |
-| AI_SetAIState           | E_AIState（NewState）    | /         | 设置 AI 状态（同步黑板）    |
-| AI_IsAlive              | /                      | bool      | 角色当前是否活着          |
-| AI_HandleSight          | Actor，bool（bSensed）    | /         | 处理视觉感知的进入/丢失      |
-| HandleDamageApplied     | 参数待确认                  | /         | 受击后由伤害系统回调        |
+| 方法名                     | 输入                  | 输出        | 作用                  |
+| ----------------------- | ------------------- | --------- | ------------------- |
+| AI_AddPerceivedActor    | Actor               | /         | 添加感受到的对象            |
+| AI_RemovePerceivedActor | Actor               | /         | 从感受列表中删除对象          |
+| AI_GetCurrentTarget     | /                   | Actor     | 获取当前锁定的对象           |
+| AI_RefreshTarget        | /                   | /         | 重算并写入黑板 TargetActor |
+| AI_GetAIState           | /                   | E_AIState | 获取当前 AI 状态          |
+| AI_SetAIState           | E_AIState（NewState） | /         | 设置 AI 状态（同步黑板）      |
+| AI_IsAlive              | /                   | bool      | 角色当前是否活着            |
+| AI_HandleSight          | Actor，bool（bSensed） | /         | 处理视觉感知的进入/丢失        |
+| HandleDamageApplied     | 参数待确认               | /         | 受击后由伤害系统回调          |
 
-### 2）数据类型
+### 2）EnemyBase 数据类型
 
-#### （1）枚举
+#### （1）EnemyBase 枚举
 
 ##### 一，E_AIState
 
-| 枚举值       | 枚举含义      |
-| --------- | --------- |
-| Idle      | 站立（待机）    |
-| Chase     | 追击        |
-| Attack    | 攻击        |
-| HitLight  | 轻受击（受控）   |
-| HitHeavy  | 重受击（受控）   |
-| KnockDown | 倒地（受控）    |
-| Dead      | 死亡（受控）    |
-
-##### 二，E_EnemyAttackType
-
-| 枚举值    | 枚举含义 |
-| ------ | ---- |
-| Common | 普通攻击 |
+| 枚举值       | 枚举含义    |
+| --------- | ------- |
+| Idle      | 站立（待机）  |
+| Chase     | 追击      |
+| Attack    | 攻击      |
+| HitLight  | 轻受击（受控） |
+| HitHeavy  | 重受击（受控） |
+| KnockDown | 倒地（受控）  |
+| Dead      | 死亡（受控）  |
 
 ---
 
 ## 4，WeaponBase（武器基类）
 
-### 1）类接口方法
+### 1）WeaponBase 类接口方法
 
 #### （1）BPI_WeaponBase
 
@@ -460,12 +498,12 @@ SetState         不用判断   —— 复位收尾
 
 ## 6.1，玩家侧动画通知与职责
 
-| 通知 | 类型 | 调用的接口 | 职责 |
-| --- | -- | ----- | -- |
-| `ANS_AttackWindow` | NotifyState | `BPI_Combat.OnAttackWindow(bool)` | 开合攻击判定窗口，驱动 AttackTrace 的命中检测 |
-| `ANS_Move` | NotifyState | `BPI_Motor.StartMotion` / `StopMotion` | 开合代码位移窗口 |
-| `ANS_LandCheck` | NotifyState | 自有逻辑（不经过 Combat） | 落地检测 |
-| `AN_Cancel` | Notify | 目前**未接** `SetCancelWindow` | 取消窗口时机改由 `ST_AttackData.CancelStart` 数据驱动 |
+| 通知                 | 类型          | 调用的接口                                  | 职责                                        |
+| ------------------ | ----------- | -------------------------------------- | ----------------------------------------- |
+| `ANS_AttackWindow` | NotifyState | `BPI_Combat.OnAttackWindow(bool)`      | 开合攻击判定窗口，驱动 AttackTrace 的命中检测             |
+| `ANS_Move`         | NotifyState | `BPI_Motor.StartMotion` / `StopMotion` | 开合代码位移窗口                                  |
+| `ANS_LandCheck`    | NotifyState | 自有逻辑（不经过 Combat）                       | 落地检测                                      |
+| `AN_Cancel`        | Notify      | 目前**未接** `SetCancelWindow`             | 取消窗口时机改由 `ST_AttackData.CancelStart` 数据驱动 |
 
 **三个要点：**
 
@@ -554,3 +592,7 @@ SetState         不用判断   —— 复位收尾
    AN_Cancel 只引用了 ActionState、没调 SetCancelWindow
    要么删掉这个通知，要么改成让它调 SetCancelWindow，别两边并存
 ```
+
+---
+
+[↑ 回到目录](#目录)
