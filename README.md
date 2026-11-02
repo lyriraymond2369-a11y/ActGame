@@ -32,6 +32,7 @@
         - [BPI_LockOn](#6bpi_lockon)
     - [2）Player 数据类型](#2player-数据类型)
         - [Player 枚举](#1player-枚举)
+    - [3）Player运行导图](#3player运行导图) —— 输入到伤害的组件流转
 - [3，EnemyBase（敌人角色基类）](#3enemybase敌人角色基类继承于-characterbase)
     - [1）EnemyBase 类接口方法](#1enemybase-类接口方法)
         - [BPI_EnemyBase](#1bpi_enemybase)
@@ -39,6 +40,7 @@
         - [BPI_AI](#3bpi_ai)
     - [2）EnemyBase 数据类型](#2enemybase-数据类型)
         - [EnemyBase 枚举](#1enemybase-枚举)
+    - [3）EnemyBase运行导图](#3enemybase运行导图) —— 感知到伤害的 AI 流转
 - [4，WeaponBase（武器基类）](#4weaponbase武器基类)
     - [1）WeaponBase 类接口方法](#1weaponbase-类接口方法)
         - [BPI_WeaponBase](#1bpi_weaponbase)
@@ -384,6 +386,51 @@ SetState         不用判断   —— 复位收尾
 
 ---
 
+### 3）Player运行导图
+
+```mermaid
+flowchart TD
+    Input([外部输入]) -->|"BPI_Player<br/>DoLight / DoHeavy / DoDodge / DoJump"| Buffer["BPC_BufferInput<br/>缓存输入 + 过期时间"]
+    Scheduler[["调度者"]] --> Tick["BP_Player Tick"]
+    Buffer -->|"Consume（一帧只吃一个）"| Tick
+
+    Tick -->|"TryEnterState（主动）"| ActionState["BPC_ActionState<br/>状态仲裁 / 取消窗口"]
+    Tick -->|"DoAttack → DoLight / DoHeavy"| Combat["BPC_Combat<br/>连招链 / 蒙太奇 / 受击"]
+
+    Combat -->|PlayAnimMontage| ABP["ABP_Player<br/>角色动画蓝图"]
+    ABP -->|"ANS_AttackWindow → OnAttackWindow"| Combat
+    ABP -->|"ANS_Move → StartMotion / StopMotion"| Motor["BPC_Motor<br/>代码位移"]
+
+    Combat -->|SetMotionProfile| Motor
+    Motor -->|推进位移| Pawn([角色 Pawn])
+
+    Combat -->|ReceiveDamage| EnemyAttr["敌人 BPC_Attribute<br/>算伤害 / 削韧"]
+    SelfAttr["自身 BPC_Attribute"] -->|"OnDamageApplied"| Combat
+    Combat -->|"EnterHit → TryEnterState"| ActionState
+
+    Combat -->|PlayHitFeedback| FB["BPC_CombatFeedBack<br/>顿帧 / 音效"]
+    FB -->|Shake| Cam["BPC_CameraDirector"]
+
+    LockOn["BPC_LockOn<br/>锁定索敌"] -->|修改朝向 / 部分动作| Combat
+    LockOn -->|转向| Pawn
+```
+
+**与手绘原图相比，这一版修正了 5 处：**
+
+```
+① AbP_Player → ABP_Player（拼写）
+② 删掉「BPC_Attribute → 敌人」这条线
+   伤害不是从 Attribute 流向敌人，而是 Combat 调「目标」的 ReceiveDamage
+③ 标签 GetAttack / TakeDamage → ReceiveDamage
+   TakeDamage 是 Attribute 内部自己调的，外部只调 ReceiveDamage
+④ 补上 BPC_Motor：ANS_Move 直连 Motor.StartMotion / StopMotion
+   Combat 只负责 SetMotionProfile 下发参数（位移职责已移交）
+⑤ 补上 BPC_CombatFeedBack + BPC_CameraDirector，以及受击回路
+   Attribute.OnDamageApplied → Combat.EnterHit
+```
+
+---
+
 ## 3，EnemyBase（敌人角色基类）（继承于 CharacterBase）
 
 | 组件名             | 组件用途      |
@@ -439,6 +486,65 @@ SetState         不用判断   —— 复位收尾
 | HitHeavy  | 重受击（受控） |
 | KnockDown | 倒地（受控）  |
 | Dead      | 死亡（受控）  |
+
+---
+
+### 3）EnemyBase运行导图
+
+```mermaid
+flowchart TD
+    Sight([视觉感知]) -->|"AI_HandleSight → AI_AddPerceivedActor"| AI["BPC_AI<br/>感知列表 / 当前目标 / AI 状态"]
+    SelfAttr["自身 BPC_Attribute<br/>受击判定"] -->|"OnDamageApplied → HandleDamageApplied"| AI
+
+    AI -->|"AI_RefreshTarget 写 TargetActor"| BB[("黑板<br/>TargetActor / AIState")]
+    AI -->|"AI_SetAIState 写 AIState<br/>Idle / Chase / Attack / HitLight / HitHeavy"| BB
+
+    BB -.->|只读| BT["BT_EnemyBase<br/>行为树（含 BT_ControlledState 子树）"]
+    AIC["AIC_EnemyBase<br/>AIController"] -->|RunBehaviorTree| BT
+
+    BT -->|BTT_EnemyAttack| Trace["BPC_AttackTrace<br/>攻击窗口 / 命中检测"]
+    BT -->|BTT_PlayHitReaction| ABP["敌人动画蓝图<br/>受击蒙太奇"]
+
+    Trace -->|"AttackByType → 播蒙太奇"| ABP
+    Trace -->|SetMotionProfile| Motor["BPC_Motor<br/>招式代码位移"]
+    ABP -->|"ANS_AttackWindow → OnAttackWindow"| Trace
+    ABP -->|"ANS_Move → StartMotion / StopMotion"| Motor
+
+    Trace -->|命中| Target["目标 BPC_Attribute<br/>ReceiveDamage"]
+    Trace -->|PlayHitFeedback| FB["BPC_CombatFeedBack<br/>顿帧 / 音效"]
+```
+
+**两处最容易画错的连线：**
+
+```
+① 行为树不调 BPC_Motor
+   BT 里的 MoveTo 走的是 CharacterMovement（寻路移动），不经过 BPC_Motor。
+   BPC_Motor 只管「招式代码位移」，调用方只有两个：
+     · BPC_AttackTrace（SetMotionProfile）
+     · 动画通知 ANS_Move（StartMotion / StopMotion）
+
+② BPC_AI 与行为树之间没有直接引用
+   两者只通过黑板交换数据，并且是单向的：
+     · BPC_AI 写黑板：AI_RefreshTarget 写 TargetActor，AI_SetAIState 写 AIState
+     · 行为树只读黑板，不会反过来调 BPC_AI 的函数
+```
+
+**敌人侧和玩家侧的结构差别：**
+
+```
+玩家    输入 → BufferInput → Tick → Combat → 蒙太奇 / Motor / 伤害
+        状态归 BPC_ActionState（组件），受击走 Combat.EnterHit
+
+敌人    感知 → BPC_AI → 写黑板 → BT_EnemyBase 读黑板 → Task
+        没有 BPC_ActionState，状态归 E_AIState，由 BPC_AI 维护并写进黑板
+        受击走 Attribute.OnDamageApplied → BPC_AI.HandleDamageApplied，不做 EnterHit
+
+两边共用：BPI_CharacterBase（取组件）、BPC_Attribute（伤害）、
+          BPC_Motor（招式位移）、BPC_CombatFeedBack（反馈）
+```
+
+**⚠️ 待补：** 敌人目前只有 `BTT_EnemyAttack` / `BTT_PlayHitReaction` 两个自定义 Task，
+`BT_ControlledState` 子树承载受控状态（受击 / 倒地 / 死亡），执行细节需打开行为树核对。
 
 ---
 
@@ -528,25 +634,25 @@ SetState         不用判断   —— 复位收尾
 
 ### 已修正的文档错误
 
-| #   | 位置                          | 旧版写法                 | 实际情况                                                                                                                         |
-| --- | --------------------------- | -------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| 1   | BPI_Attribute               | 只有 8 个函数             | 实际 12 个，补 `EnterGuard` / `ExitGuard` / `NotifyDodgeStart` / `RestorePoise`                                                   |
-| 2   | BPI_Attribute.ReceiveDamage | 描述为「是否完美格挡，以及是否破韧」   | 两个 bool 是 `bPerfectBlock` 和 `bPerfectDodge`，**没有破韧输出**                                                                       |
-| 3   | BPI_ActionState             | 5 个函数                | 实际 7 个，补 `SetState` / `SetCancelWindow`                                                                                      |
-| 4   | BPI_CharacterBase           | 4 个函数                | 实际 8 个，补 `GetMeshComponent` / `GetHitBoxComponent` / `GetWeapon` / `GetImpulse`                                              |
-| 5   | BPI_Motor                   | 4 个函数                | 实际 8 个，补 `IsMoving` / `IsBeingKnockedBack` / `SetGravity` / `ResetGravity`                                                   |
-| 6   | BPI_Player                  | 14 个函数               | **实际 9 个**：`GetMesh` / `GetHitBox` / `GetWeapon` / `GetAttributeComponent` / `GetCharacterMovement` 已上收到 `BPI_CharacterBase` |
-| 7   | BPI_EnemyBase               | 5 个函数                | **实际 2 个**：`GetMesh` / `GetHitBox` / `GetEnemyAttributeComponent` 已上收到 `BPI_CharacterBase`                                   |
-| 8   | BPI_AI                      | 7 个函数                | 实际 9 个，补 `AI_SetAIState` / `HandleDamageApplied`                                                                             |
-| 9   | BPI_LockOn                  | 5 个函数                | 实际 6 个，补 `GetTarget`                                                                                                         |
-| 10  | BPI_Combat                  | 7 个函数                | **实际 7 个**：**没有** `ClearAttackData`；`MoveStart` / `MoveEnd` 已删除（位移改由 `ANS_Move` 直连 Motor）；新增 `EnterHit` |
-| 11  | E_AIState                   | 4 个值                 | 实际 7 个，补 `HitLight` / `HitHeavy` / `KnockDown`                                                                               |
-| 12  | ST_AttackData               | 写作 `PoiseDamageRate` | 资产里是 `PoiseDdamageRate`（多一个 d）                                                                                               |
-| 13  | 缺失整节                        | 无                    | 补 `BPI_GameState` / `E_EnemyAttackType`                                                                                      |
-| 14  | BPI_HIt                     | 1 个函数（EnterHit）        | **已删除**，`EnterHit` 合并进 `BPI_Combat`，签名改为 `(E_ActionState HitType, E_HitDirection HitLoc)`                                 |
-| 15  | BPI_Combat.MoveStart/MoveEnd | 2 个函数                | **已删除**，`ANS_Move` 改为直连 `BPI_Motor.StartMotion` / `StopMotion`                                                              |
-| 16  | AN_MoveEnd                  | 独立通知                 | **已删除**。`ANS_Move` 的 NotifyEnd 已负责收尾，该通知与它重复                                                                               |
-| 17  | BPI_Attribute / BPC_Attribute | Code/ActorComponent/DamageSystem | 已迁到 `Code/ActorComponent/Attribute`                                                                                    |
+| #   | 位置                            | 旧版写法                             | 实际情况                                                                                                                         |
+| --- | ----------------------------- | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| 1   | BPI_Attribute                 | 只有 8 个函数                         | 实际 12 个，补 `EnterGuard` / `ExitGuard` / `NotifyDodgeStart` / `RestorePoise`                                                   |
+| 2   | BPI_Attribute.ReceiveDamage   | 描述为「是否完美格挡，以及是否破韧」               | 两个 bool 是 `bPerfectBlock` 和 `bPerfectDodge`，**没有破韧输出**                                                                       |
+| 3   | BPI_ActionState               | 5 个函数                            | 实际 7 个，补 `SetState` / `SetCancelWindow`                                                                                      |
+| 4   | BPI_CharacterBase             | 4 个函数                            | 实际 8 个，补 `GetMeshComponent` / `GetHitBoxComponent` / `GetWeapon` / `GetImpulse`                                              |
+| 5   | BPI_Motor                     | 4 个函数                            | 实际 8 个，补 `IsMoving` / `IsBeingKnockedBack` / `SetGravity` / `ResetGravity`                                                   |
+| 6   | BPI_Player                    | 14 个函数                           | **实际 9 个**：`GetMesh` / `GetHitBox` / `GetWeapon` / `GetAttributeComponent` / `GetCharacterMovement` 已上收到 `BPI_CharacterBase` |
+| 7   | BPI_EnemyBase                 | 5 个函数                            | **实际 2 个**：`GetMesh` / `GetHitBox` / `GetEnemyAttributeComponent` 已上收到 `BPI_CharacterBase`                                   |
+| 8   | BPI_AI                        | 7 个函数                            | 实际 9 个，补 `AI_SetAIState` / `HandleDamageApplied`                                                                             |
+| 9   | BPI_LockOn                    | 5 个函数                            | 实际 6 个，补 `GetTarget`                                                                                                         |
+| 10  | BPI_Combat                    | 7 个函数                            | **实际 7 个**：**没有** `ClearAttackData`；`MoveStart` / `MoveEnd` 已删除（位移改由 `ANS_Move` 直连 Motor）；新增 `EnterHit`                      |
+| 11  | E_AIState                     | 4 个值                             | 实际 7 个，补 `HitLight` / `HitHeavy` / `KnockDown`                                                                               |
+| 12  | ST_AttackData                 | 写作 `PoiseDamageRate`             | 资产里是 `PoiseDdamageRate`（多一个 d）                                                                                               |
+| 13  | 缺失整节                          | 无                                | 补 `BPI_GameState` / `E_EnemyAttackType`                                                                                      |
+| 14  | BPI_HIt                       | 1 个函数（EnterHit）                  | **已删除**，`EnterHit` 合并进 `BPI_Combat`，签名改为 `(E_ActionState HitType, E_HitDirection HitLoc)`                                    |
+| 15  | BPI_Combat.MoveStart/MoveEnd  | 2 个函数                            | **已删除**，`ANS_Move` 改为直连 `BPI_Motor.StartMotion` / `StopMotion`                                                               |
+| 16  | AN_MoveEnd                    | 独立通知                             | **已删除**。`ANS_Move` 的 NotifyEnd 已负责收尾，该通知与它重复                                                                                 |
+| 17  | BPI_Attribute / BPC_Attribute | Code/ActorComponent/DamageSystem | 已迁到 `Code/ActorComponent/Attribute`                                                                                          |
 
 ### 需要在编辑器里处理的遗留问题
 
