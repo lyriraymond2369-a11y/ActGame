@@ -41,6 +41,7 @@
     - [2）EnemyBase 数据类型](#2enemybase-数据类型)
         - [EnemyBase 枚举](#1enemybase-枚举)
     - [3）EnemyBase运行导图](#3enemybase运行导图) —— 感知到伤害的 AI 流转
+    - [4）受击状态机](#4受击状态机) —— 等级、优先级、幂等与重播
 - [4，WeaponBase（武器基类）](#4weaponbase武器基类)
     - [1）WeaponBase 类接口方法](#1weaponbase-类接口方法)
         - [BPI_WeaponBase](#1bpi_weaponbase)
@@ -79,10 +80,10 @@
 | BPI_Combat               | Player/Component/Combat            | 7   | BPC_Combat         |
 | BPI_LockOn               | Player/Component/LockOn            | 6   | BPC_LockOn         |
 | BPI_EnemyBase            | Enemy                              | 2   | BP_EnemyBase       |
-| BPI_AttackTrace          | Enemy/Component/AttackTrace        | 2   | BPC_AttackTrace    |
-| BPI_AI                   | Enemy/Component/AI                 | 9   | BPC_AI             |
+| BPI_AttackTrace          | Enemy/Component/AttackTrace        | 3   | BPC_AttackTrace    |
+| BPI_AI                   | Enemy/Component/AI                 | 12  | BPC_AI             |
 
-合计 82 个接口函数。
+合计 86 个接口函数。
 
 ---
 
@@ -452,24 +453,28 @@ flowchart TD
 
 #### （2）BPI_AttackTrace
 
-| 方法名            | 输入           | 输出  | 作用           |
-| -------------- | ------------ | --- | ------------ |
-| OnAttackWindow | bool         | /   | 开关攻击窗口       |
-| AttackByType   | E_AttackType | /   | 根据攻击类型发动攻击   |
+| 方法名            | 输入                                    | 输出   | 作用                    |
+| -------------- | ------------------------------------- | ---- | --------------------- |
+| OnAttackWindow | bool                                  | /    | 开关攻击窗口                |
+| AttackByType   | E_AttackType                          | /    | 根据攻击类型发动攻击            |
+| PlayHitMontage | E_AIState（受击等级），E_HitDirection（受击方向） | bool | 查蒙太奇表并播放敌人的受击蒙太奇      |
 
 #### （3）BPI_AI
 
-| 方法名                     | 输入                  | 输出        | 作用                  |
-| ----------------------- | ------------------- | --------- | ------------------- |
-| AI_AddPerceivedActor    | Actor               | /         | 添加感受到的对象            |
-| AI_RemovePerceivedActor | Actor               | /         | 从感受列表中删除对象          |
-| AI_GetCurrentTarget     | /                   | Actor     | 获取当前锁定的对象           |
-| AI_RefreshTarget        | /                   | /         | 重算并写入黑板 TargetActor |
-| AI_GetAIState           | /                   | E_AIState | 获取当前 AI 状态          |
-| AI_SetAIState           | E_AIState（NewState） | /         | 设置 AI 状态（同步黑板）      |
-| AI_IsAlive              | /                   | bool      | 角色当前是否活着            |
-| AI_HandleSight          | Actor，bool（bSensed） | /         | 处理视觉感知的进入/丢失        |
-| HandleDamageApplied     | 参数待确认               | /         | 受击后由伤害系统回调          |
+| 方法名                     | 输入                             | 输出        | 作用                        |
+| ----------------------- | ------------------------------ | --------- | ------------------------- |
+| AI_AddPerceivedActor    | Actor                          | /         | 添加感受到的对象                  |
+| AI_RemovePerceivedActor | Actor                          | /         | 从感受列表中删除对象                |
+| AI_GetCurrentTarget     | /                              | Actor     | 获取当前锁定的对象                 |
+| AI_RefreshTarget        | /                              | /         | 重算并写入黑板 TargetActor       |
+| AI_GetAIState           | /                              | E_AIState | 获取当前 AI 状态                |
+| AI_SetAIState           | E_AIState（NewState）            | bool      | 带优先级闸门的状态转换，返回目标状态是否达成    |
+| AI_ResetAIState         | E_AIState（NewState）            | bool      | 强制转场（绕过优先级），死亡状态不可转出      |
+| AI_GetHitStamp          | /                              | int       | 取当前受击戳，供表现层读取             |
+| AI_ConsumeHit           | int（Stamp）                    | bool      | 表现层回写已消费的戳，返回是否已全部消费完     |
+| AI_IsAlive              | /                              | bool      | 角色当前是否活着                  |
+| AI_HandleSight          | Actor，bool（bSensed）           | /         | 处理视觉感知的进入/丢失              |
+| HandleDamageApplied     | E_HitOutCome，E_HitDirection，bool | /         | 受击后由 Attribute 的 OnDamageApplied 回调 |
 
 ### 2）EnemyBase 数据类型
 
@@ -494,18 +499,19 @@ flowchart TD
 ```mermaid
 flowchart TD
     Sight([视觉感知]) -->|"AI_HandleSight → AI_AddPerceivedActor"| AI["BPC_AI<br/>感知列表 / 当前目标 / AI 状态"]
-    SelfAttr["自身 BPC_Attribute<br/>受击判定"] -->|"OnDamageApplied → HandleDamageApplied"| AI
+    SelfAttr["自身 BPC_Attribute<br/>受击判定"] -->|"OnDamageApplied<br/>HitOutCome + HitDirection"| AI
 
-    AI -->|"AI_RefreshTarget 写 TargetActor"| BB[("黑板<br/>TargetActor / AIState")]
-    AI -->|"AI_SetAIState 写 AIState<br/>Idle / Chase / Attack / HitLight / HitHeavy"| BB
+    AI -->|"AI_RefreshTarget 写 TargetActor"| BB[("黑板<br/>AIState / TargetActor<br/>HitDirection / bHitPending")]
+    AI -->|"AI_SetAIState 写 AIState"| BB
 
-    BB -.->|只读| BT["BT_EnemyBase<br/>行为树（含 BT_ControlledState 子树）"]
+    BB -.->|只读| BT["BT_EnemyBase<br/>行为树"]
     AIC["AIC_EnemyBase<br/>AIController"] -->|RunBehaviorTree| BT
 
-    BT -->|BTT_EnemyAttack| Trace["BPC_AttackTrace<br/>攻击窗口 / 命中检测"]
-    BT -->|BTT_PlayHitReaction| ABP["敌人动画蓝图<br/>受击蒙太奇"]
+    BT -->|"BTT_EnemyAttack → AttackByType"| Trace["BPC_AttackTrace<br/>攻击判定 / 蒙太奇播放"]
+    BT -->|"BTT_PlayHitReaction → PlayHitMontage"| Trace
 
-    Trace -->|"AttackByType → 播蒙太奇"| ABP
+    Trace -->|"查受击蒙太奇表"| DT[("DT_Reactions<br/>ST_AttackData")]
+    Trace -->|"AttackByType / PlayHitMontage"| ABP["敌人动画蓝图"]
     Trace -->|SetMotionProfile| Motor["BPC_Motor<br/>招式代码位移"]
     ABP -->|"ANS_AttackWindow → OnAttackWindow"| Trace
     ABP -->|"ANS_Move → StartMotion / StopMotion"| Motor
@@ -514,7 +520,7 @@ flowchart TD
     Trace -->|PlayHitFeedback| FB["BPC_CombatFeedBack<br/>顿帧 / 音效"]
 ```
 
-**两处最容易画错的连线：**
+**三处最容易画错的连线：**
 
 ```
 ① 行为树不调 BPC_Motor
@@ -527,6 +533,11 @@ flowchart TD
    两者只通过黑板交换数据，并且是单向的：
      · BPC_AI 写黑板：AI_RefreshTarget 写 TargetActor，AI_SetAIState 写 AIState
      · 行为树只读黑板，不会反过来调 BPC_AI 的函数
+
+③ 受击方向和受击等级是一起走的
+   OnDamageApplied 同时带 HitOutCome 和 HitDirection，
+   BPC_AI 把方向写进黑板，Task 读它再传给 PlayHitMontage，
+   中间任何一环都不要自己重新算方向。
 ```
 
 **敌人侧和玩家侧的结构差别：**
@@ -545,6 +556,154 @@ flowchart TD
 
 **⚠️ 待补：** 敌人目前只有 `BTT_EnemyAttack` / `BTT_PlayHitReaction` 两个自定义 Task，
 `BT_ControlledState` 子树承载受控状态（受击 / 倒地 / 死亡），执行细节需打开行为树核对。
+
+---
+
+### 4）受击状态机
+
+敌人没有 `BPC_ActionState`，受击状态由 `BPC_AI` 自己维护。
+**所有转换规则收在 `AI_SetAIState` 一个入口里，行为树只读状态、不做判断。**
+
+#### （1）状态分级
+
+| E_AIState | Priority | 受控 | 说明     |
+| --------- | -------- | -- | ------ |
+| Idle      | 0        | 否  | 待机     |
+| Chase     | 0        | 否  | 追击     |
+| Attack    | 0        | 否  | 攻击     |
+| HitLight  | 1        | 是  | 轻受击    |
+| HitHeavy  | 2        | 是  | 重受击    |
+| KnockDown | 3        | 是  | 倒地     |
+| Dead      | 4        | 是  | 死亡（终态） |
+
+> 蓝图里落地为 `AIStateProperty` 映射表，字段：`Priority` / `IsControlled`。
+
+#### （2）三条不变量
+
+```
+① 所有非受控状态的 Priority 必须为 0
+   「不可转出」是「非受控 0 < 受控 ≥1」的推论。
+   一旦给某个非受控状态更高优先级，转出规则会静默失效，而且不会报错。
+
+② Dead 是唯一禁止幂等的状态
+   Dead → Dead 返回 false；其余同级转换返回 true。
+
+③ AI_ResetAIState 是受控状态的唯一出口
+   它能绕过优先级闸门，只允许受击表现播完后调用。
+   别的地方想改状态一律走 AI_SetAIState。
+```
+
+#### （3）AI_SetAIState —— 只升不降
+
+```
+[1] NewState == Dead ?
+      CurrentState == Dead → return false        （死亡禁止幂等）
+      否则 ApplyState(Dead); return true          （死亡从任何状态都能进）
+
+[2] NewState == CurrentState ?
+      return true                                （幂等命中，不写黑板）
+
+[3] Priority(New) < Priority(Current) ?
+      return false                               （降级 / 转出 一并拦下）
+
+[4] ApplyState(New); return true
+```
+
+**返回值语义：`true` = 调用结束后当前状态等于 NewState（无论是刚写入还是本来就是）；`false` = 没达成。**
+
+判断表：
+
+| Current   | New       | 出口 | 返回        |
+| --------- | --------- | -- | --------- |
+| Idle      | Chase     | 4  | true      |
+| Chase     | HitLight  | 4  | true      |
+| HitLight  | HitLight  | 2  | true（幂等）   |
+| HitLight  | HitHeavy  | 4  | true（升级）   |
+| HitHeavy  | HitLight  | 3  | false（降级）  |
+| HitHeavy  | Chase     | 3  | false（转出）  |
+| KnockDown | Attack    | 3  | false（转出）  |
+| 任意非 Dead  | Dead      | 1  | true      |
+| Dead      | Dead      | 1  | **false** |
+| Dead      | HitLight  | 3  | false     |
+
+#### （4）AI_ResetAIState —— 强制转场
+
+```
+[1] CurrentState == Dead ?
+      return false                               （死亡不可转出）
+
+[2] NewState == CurrentState ?
+      return true                                （幂等短路，省一次黑板写）
+
+[3] ApplyState(NewState); return true
+```
+
+它**不判优先级** —— 受控状态永远过不了 `AI_SetAIState` 的闸门，回不到普通状态，只能从这里出去。
+
+#### （5）重播机制：状态幂等 ≠ 表现幂等
+
+受击状态是幂等的（`HitLight → HitLight` 状态不变），但**表现必须重播**（连砍两刀要看到两次受击）。
+这个矛盾靠两个计数器把「状态」和「表现」解耦：
+
+```
+HitStamp       每次状态被接受时 +1，永不清零
+HandledStamp   表现层（BTT_PlayHitReaction）已消费到哪
+bHitPending    = (HitStamp != HandledStamp)，实时写入黑板
+```
+
+**三个写入点：**
+
+```
+ApplyState           → CurrentState + 黑板 AIState（+ bControlled）
+HandleDamageApplied  → 状态被接受后 HitStamp++，再刷黑板
+AI_ConsumeHit        → HandledStamp = max(本次 Stamp)，再刷黑板
+```
+
+**时序：**
+
+| 时刻 | 事件                    | HitStamp | HandledStamp | bHitPending |
+| -- | --------------------- | -------- | ------------ | ----------- |
+| T0 | 初始                    | 0        | 0            | false       |
+| T1 | 挨第一刀，状态被接受            | **1**    | 0            | **true**    |
+| T2 | Task 执行，先消费再播          | 1        | **1**        | **false**   |
+| T3 | 播放中挨第二刀（同级）           | **2**    | 1            | **true**    |
+| T4 | 旧蒙太奇被新蒙太奇覆盖，新 Task 消费 | 2        | **2**        | **false**   |
+| T5 | 播完，无新受击，复位            | 2        | 2            | false       |
+
+> **`AI_ConsumeHit` 必须放在 Task 执行的开头**：它把 `bHitPending` 置回 false，下一次受击才能产生 `false → true` 的边沿，从而立刻打断上一轮、由新蒙太奇覆盖旧蒙太奇。
+
+#### （6）黑板键
+
+| 键            | 类型              | 写入方                 | 说明                       |
+| ------------ | --------------- | ------------------- | ------------------------ |
+| AIState      | E_AIState       | ApplyState          | 状态机同步                    |
+| bHitPending  | bool            | SyncBlackboard      | 是否有未消费的受击                |
+| HitDirection | E_HitDirection  | HandleDamageApplied | 本次受击方向，只与 HitStamp 同步更新   |
+| TargetActor  | Actor           | AI_RefreshTarget    | 当前目标                     |
+| DisToTarget  | float           | AI 服务              | 与目标距离                    |
+
+**行为树的 Task 和 Decorator 一律只读黑板，不直接写；所有写入都经过 `BPC_AI`。**
+
+#### （7）受击蒙太奇表
+
+| 项     | 内容                                              |
+| ----- | ----------------------------------------------- |
+| 资产    | `Player/DataTable/DT_Reactions`（敌我共用）            |
+| 行结构   | `ST_AttackData`                                 |
+| 行名格式  | `{受击等级}_{受击方向}`，例如 `HitLight_Front`             |
+| 现有行   | `HitLight` / `HitHeavy` × `Front` / `Back` / `Left` / `Right` |
+| 查表回退  | 先找 `{等级}_{方向}`，找不到再找 `{等级}`（倒地 / 死亡不分方向） |
+| 播放方式  | 覆盖式播放，不手动 Stop 旧蒙太奇                             |
+
+**受击行里只认以下字段，其余（`DamageRate` / `PoiseDdamageRate` / `Next` / `CancelStart` / `AttackType` 等）在受击语境下无效：**
+
+```
+✅ Montage     受击动画
+✅ HitStop     受击顿帧
+🚫 其余        留空
+```
+
+**⚠️ 拼行名不要用 `Enum to String`** —— 它的输出带 `E_AIState::` 前缀或受 DisplayName 影响，拼出来的行名查不到，而且查表失败是静默的。用 `Switch` 映射到字面量。
 
 ---
 
@@ -643,7 +802,7 @@ flowchart TD
 | 5   | BPI_Motor                     | 4 个函数                            | 实际 8 个，补 `IsMoving` / `IsBeingKnockedBack` / `SetGravity` / `ResetGravity`                                                   |
 | 6   | BPI_Player                    | 14 个函数                           | **实际 9 个**：`GetMesh` / `GetHitBox` / `GetWeapon` / `GetAttributeComponent` / `GetCharacterMovement` 已上收到 `BPI_CharacterBase` |
 | 7   | BPI_EnemyBase                 | 5 个函数                            | **实际 2 个**：`GetMesh` / `GetHitBox` / `GetEnemyAttributeComponent` 已上收到 `BPI_CharacterBase`                                   |
-| 8   | BPI_AI                        | 7 个函数                            | 实际 9 个，补 `AI_SetAIState` / `HandleDamageApplied`                                                                             |
+| 8   | BPI_AI                        | 7 个函数                            | 实际 9 个，补 `AI_SetAIState` / `HandleDamageApplied`（后续受击逻辑又扩到 12 个，见 #18）                                                          |
 | 9   | BPI_LockOn                    | 5 个函数                            | 实际 6 个，补 `GetTarget`                                                                                                         |
 | 10  | BPI_Combat                    | 7 个函数                            | **实际 7 个**：**没有** `ClearAttackData`；`MoveStart` / `MoveEnd` 已删除（位移改由 `ANS_Move` 直连 Motor）；新增 `EnterHit`                      |
 | 11  | E_AIState                     | 4 个值                             | 实际 7 个，补 `HitLight` / `HitHeavy` / `KnockDown`                                                                               |
@@ -653,6 +812,7 @@ flowchart TD
 | 15  | BPI_Combat.MoveStart/MoveEnd  | 2 个函数                            | **已删除**，`ANS_Move` 改为直连 `BPI_Motor.StartMotion` / `StopMotion`                                                               |
 | 16  | AN_MoveEnd                    | 独立通知                             | **已删除**。`ANS_Move` 的 NotifyEnd 已负责收尾，该通知与它重复                                                                                 |
 | 17  | BPI_Attribute / BPC_Attribute | Code/ActorComponent/DamageSystem | 已迁到 `Code/ActorComponent/Attribute`                                                                                          |
+| 18  | BPI_AI / BPI_AttackTrace      | BPI_AI 9 个、BPI_AttackTrace 2 个；`AI_SetAIState` 无返回值；`HandleDamageApplied` 参数待确认 | BPI_AI 12 个（补 `AI_ResetAIState` / `AI_GetHitStamp` / `AI_ConsumeHit`），`AI_SetAIState` 改为返回 bool；BPI_AttackTrace 3 个（补 `PlayHitMontage`）；`HandleDamageApplied` 参数为 `(E_HitOutCome, E_HitDirection, bool)`；接口总数 82 → 86 |
 
 ### 需要在编辑器里处理的遗留问题
 
@@ -669,8 +829,9 @@ flowchart TD
 ④ ST_AttackData.PoiseDdamageRate 拼写多一个 d
    同上，改名要连带所有读取点
 
-⑤ BPI_AI.HandleDamageApplied 的参数没确认
-   扫描只能看到函数名，看不到引脚。需要打开资产确认
+⑤ BPI_AI.HandleDamageApplied 的参数（已确认）
+   与 Attribute 的 OnDamageApplied 同源，至少含 E_HitOutCome 与 E_HitDirection
+   ⚠ 第三个参数（决定 HitLight / HitHeavy 的那一位）签名需在编辑器里再核一次
 
 ⑥ Get* 归属已统一到 BPI_CharacterBase（已完成）
    基类持有：GetAttributeComponent、GetCombatFeedbackComponent、GetMotorComponent、
