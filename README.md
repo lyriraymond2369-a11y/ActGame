@@ -32,7 +32,6 @@
         - [BPI_LockOn](#6bpi_lockon)
     - [2）Player 数据类型](#2player-数据类型)
         - [Player 枚举](#1player-枚举)
-    - [3）Player运行导图](#3player运行导图) —— 输入到伤害的组件流转
 - [3，EnemyBase（敌人角色基类）](#3enemybase敌人角色基类继承于-characterbase)
     - [1）EnemyBase 类接口方法](#1enemybase-类接口方法)
         - [BPI_EnemyBase](#1bpi_enemybase)
@@ -40,8 +39,6 @@
         - [BPI_AI](#3bpi_ai)
     - [2）EnemyBase 数据类型](#2enemybase-数据类型)
         - [EnemyBase 枚举](#1enemybase-枚举)
-    - [3）EnemyBase运行导图](#3enemybase运行导图) —— 感知到伤害的 AI 流转
-    - [4）受击状态机](#4受击状态机) —— 等级、优先级、幂等与重播
 - [4，WeaponBase（武器基类）](#4weaponbase武器基类)
     - [1）WeaponBase 类接口方法](#1weaponbase-类接口方法)
         - [BPI_WeaponBase](#1bpi_weaponbase)
@@ -51,7 +48,14 @@
     - [BPI_Interaction（已删除）](#3bpi_interaction)
 - [6，写蓝图时的三条硬规矩](#6写蓝图时的三条硬规矩) —— 分层约定，动手前先读
 - [7，玩家侧动画通知与职责](#7玩家侧动画通知与职责) —— 四个动画通知分别调谁
-- [8、校对差异清单](#8校对差异清单)
+- [8，功能实现](#8功能实现) —— 单个机制的设计细则
+    - [1）敌人受击状态机](#1敌人受击状态机) —— 等级、优先级、幂等与重播
+    - [2）完美闪避与无敌帧](#2完美闪避与无敌帧) —— 无敌区间 / 完美窗口 / 奖励链
+    - [3）闪避方向（四向）](#3闪避方向四向) —— 方向判定、参考系对齐、四行数据
+- [9，运行导图](#9运行导图) —— 组件之间的实际流转
+    - [1）玩家运行导图](#1玩家运行导图) —— 输入到伤害
+    - [2）敌人运行导图](#2敌人运行导图) —— 感知到伤害
+- [10，校对差异清单](#10校对差异清单)
     - [已修正的文档错误](#已修正的文档错误)
     - [需要在编辑器里处理的遗留问题](#需要在编辑器里处理的遗留问题)
 
@@ -68,13 +72,13 @@
 | 接口                       | 目录                                 | 函数数 | 对应实现               |
 | ------------------------ | ---------------------------------- | --- | ------------------ |
 | BPI_CharacterBase        | Code/Interface                     | 8   | 无（纯接口，所有组件获取的统一入口） |
-| BPI_Attribute            | Code/ActorComponent/Attribute      | 12  | BPC_Attribute      |
-| BPI_CombatFeedBack       | Code/ActorComponent/CombatFeedBack | 3   | BPC_CombatFeedBack |
+| BPI_Attribute            | Code/ActorComponent/Attribute      | 13  | BPC_Attribute      |
+| BPI_CombatFeedBack       | Code/ActorComponent/CombatFeedBack | 4   | BPC_CombatFeedBack |
 | BPI_Motor                | Code/ActorComponent/Motor          | 8   | BPC_Motor          |
 | BPI_WeaponBase           | Code/Weapon                        | 2   | BP_WeaponBase      |
 | BPI_GameState            | Code/GameState                     | 3   | 待接入                |
-| BPI_Player               | Player                             | 9   | BP_Player          |
-| BPI_ActionState          | Player/Component/ActionState       | 7   | BPC_ActionState    |
+| BPI_Player               | Player                             | 10  | BP_Player          |
+| BPI_ActionState          | Player/Component/ActionState       | 8   | BPC_ActionState    |
 | BPI_BufferInput          | Player/Component/BufferInput       | 3   | BPC_BufferInput    |
 | BPI_CameraDirector       | Player/Component/CameraDirector    | 1   | BPC_CameraDirector |
 | BPI_Combat               | Player/Component/Combat            | 7   | BPC_Combat         |
@@ -83,7 +87,7 @@
 | BPI_AttackTrace          | Enemy/Component/AttackTrace        | 3   | BPC_AttackTrace    |
 | BPI_AI                   | Enemy/Component/AI                 | 12  | BPC_AI             |
 
-合计 86 个接口函数。
+合计 90 个接口函数。
 
 ---
 
@@ -128,7 +132,8 @@
 | RestorePoise     | /                                    | /                      | 恢复韧性到 MaxPoise（Tick 里调用）                        |
 | EnterGuard       | /                                    | /                      | 进入格挡：置 bIsGuarding，记录 LastGuardTime             |
 | ExitGuard        | /                                    | /                      | 退出格挡                                            |
-| NotifyDodgeStart | float（Time）                          | /                      | 记录闪避起手时刻，供完美闪避无敌帧判定使用                           |
+| NotifyDodgeStart | float（Time）                          | /                      | 记录闪避起手时刻，供完美闪避窗口判定使用                            |
+| SetInvincible    | bool（bInvincible）                     | /                      | 开关无敌。由 `ANS_IFrame` 的 Begin / End 调用              |
 
 `ReceiveDamage` **的三个输出含义：**
 
@@ -136,17 +141,21 @@
 | --------------- | ----------------------------------------- |
 | HitOutCome      | `Ignore` 无伤 / `Hit` 普通受击 / `Blocked` 格挡生效 |
 | bPerfectBlock   | 是否完美格挡（完全免伤）                              |
-| bPerfectDodge   | 是否完美闪避（无敌帧内受击）                            |
+| bPerfectDodge   | 是否完美闪避（在无敌帧内**且**处于完美窗口）                  |
 
 **判定优先级（顺序不能调）：**
 
 ```
-① 已死亡                → Ignore
-② 完美闪避窗口内         → Ignore + bPerfectDodge
-③ 格挡 + 正面 + Poise>0 → 完美格挡窗口内？Blocked + bPerfectBlock 免伤
-                          否则 Blocked，伤害 ×(1−GuardDamageReduction)，削轫 ×GuardPoiseScale
-④ 其余（含背面格挡）      → Hit，伤害 ×(1−Defense)
+① 已死亡                        → Ignore
+② 无敌中（bInvincible 或 无敌尾巴）
+     且在完美窗口内              → Ignore + bPerfectDodge = true
+     仅无敌、不在完美窗口        → Ignore，bPerfectDodge = false
+③ 格挡 + 正面 + Poise>0         → 完美格挡窗口内？Blocked + bPerfectBlock 免伤
+                                  否则 Blocked，伤害 ×(1−GuardDamageReduction)，削轫 ×GuardPoiseScale
+④ 其余（含背面格挡）             → Hit，伤害 ×(1−Defense)
 ```
+
+**② 的两个条件是 `AND`：只判时间会把闪避结束后的受击误判成完美；只判无敌会把整个无敌区间都算成完美，缓冲带就没了。**
 
 **韧性为 0 时格挡完全失效，完美格挡也一并失效。**
 
@@ -157,6 +166,7 @@
 | PlayHitFeedback | E_HitOutCome（Outcome），Vector3（ImpactLocation），bool（bPerfect），Actor（OtherActor），float（BaseHitStop） | /   | 播放命中音效、顿帧、屏幕抖动                                |
 | PlayHitStop     | Actor，float                                   | /   | 根据命中者与时长播放顿帧                                  |
 | EndHitStop      | /                                             | /   | 离开顿帧                                          |
+| PlayPerfectDodgeSlowMo | /                                      | /   | 播放完美闪避的全局慢动作（自带恢复计时）                          |
 
 #### （4）BPI_Motor
 
@@ -259,7 +269,8 @@
 | GetActionStateComponent | /    | BPC_ActionState 对象引用    | 获取 BPC_ActionState     |
 | GetCombatComponent      | /    | BPC_Combat 对象引用         | 获取 BPC_Combat          |
 | GetBufferInputComponent | /    | BPC_BufferInput 对象引用    | 获取 BPC_BufferInput     |
-| GetDirectorComponent    | /    | BPC_CameraDirector 对象引用 | 获取 BPC_CameraDirector  |
+| GetCameraDirectorComponent | /  | BPC_CameraDirector 对象引用 | 获取 BPC_CameraDirector（相机控制组件） |
+| GetCameraComponent      | /    | CameraComponent         | 获取角色的 CameraComponent（相机组件） |
 | GetLockComponent        | /    | BPC_LockOn 对象引用         | 获取 BPC_LockOn          |
 | StartJump               | /    | /                       | 让角色跳跃                  |
 | IntoHardLockState       | /    | /                       | 进入硬锁                   |
@@ -267,6 +278,14 @@
 | SetLockPlevisZ          | bool | /                       | 设置是否锁定 Plevis 骨骼的 z 位置 |
 
 > `GetMesh`、`GetHitBox`、`GetWeapon`、`GetAttributeComponent`、`GetCharacterMovement` **已全部上收到** `BPI_CharacterBase`，玩家侧不再各自声明。写蓝图时统一走基类接口。
+
+> **`GetCameraComponent` 与 `GetCameraDirectorComponent` 是两个不同的东西，可以同时存在：**
+
+```
+CameraComponent         UE 自带的相机组件 —— 挂在角色上的实际摄像机
+BPC_CameraDirector      项目自研的相机控制组件 —— 锁定、震动、视角过渡
+                        它不持有相机，只下指令
+```
 
 #### （2）BPI_ActionState
 
@@ -279,6 +298,7 @@
 | SetCancelWindow | bool                    | /             | 开关取消窗口。只允许 Combat 与动画通知调用                 |
 | CanDodge        | /                       | bool          | 当前是否可以冲刺（受 CD 与非受控状态约束）                   |
 | UpdateDodgeCD   | float（Time）             | /             | 记录冲刺起手时刻，用于 CD 判定                         |
+| ClearDodgeCD    | /                       | /             | 清空冲刺冷却。**仅供完美闪避调用**，让玩家立刻可以再闪              |
 
 **三个转换入口的分工：**
 
@@ -387,48 +407,7 @@ SetState         不用判断   —— 复位收尾
 
 ---
 
-### 3）Player运行导图
-
-```mermaid
-flowchart TD
-    Input([外部输入]) -->|"BPI_Player<br/>DoLight / DoHeavy / DoDodge / DoJump"| Buffer["BPC_BufferInput<br/>缓存输入 + 过期时间"]
-    Scheduler[["调度者"]] --> Tick["BP_Player Tick"]
-    Buffer -->|"Consume（一帧只吃一个）"| Tick
-
-    Tick -->|"TryEnterState（主动）"| ActionState["BPC_ActionState<br/>状态仲裁 / 取消窗口"]
-    Tick -->|"DoAttack → DoLight / DoHeavy"| Combat["BPC_Combat<br/>连招链 / 蒙太奇 / 受击"]
-
-    Combat -->|PlayAnimMontage| ABP["ABP_Player<br/>角色动画蓝图"]
-    ABP -->|"ANS_AttackWindow → OnAttackWindow"| Combat
-    ABP -->|"ANS_Move → StartMotion / StopMotion"| Motor["BPC_Motor<br/>代码位移"]
-
-    Combat -->|SetMotionProfile| Motor
-    Motor -->|推进位移| Pawn([角色 Pawn])
-
-    Combat -->|ReceiveDamage| EnemyAttr["敌人 BPC_Attribute<br/>算伤害 / 削韧"]
-    SelfAttr["自身 BPC_Attribute"] -->|"OnDamageApplied"| Combat
-    Combat -->|"EnterHit → TryEnterState"| ActionState
-
-    Combat -->|PlayHitFeedback| FB["BPC_CombatFeedBack<br/>顿帧 / 音效"]
-    FB -->|Shake| Cam["BPC_CameraDirector"]
-
-    LockOn["BPC_LockOn<br/>锁定索敌"] -->|修改朝向 / 部分动作| Combat
-    LockOn -->|转向| Pawn
-```
-
-**与手绘原图相比，这一版修正了 5 处：**
-
-```
-① AbP_Player → ABP_Player（拼写）
-② 删掉「BPC_Attribute → 敌人」这条线
-   伤害不是从 Attribute 流向敌人，而是 Combat 调「目标」的 ReceiveDamage
-③ 标签 GetAttack / TakeDamage → ReceiveDamage
-   TakeDamage 是 Attribute 内部自己调的，外部只调 ReceiveDamage
-④ 补上 BPC_Motor：ANS_Move 直连 Motor.StartMotion / StopMotion
-   Combat 只负责 SetMotionProfile 下发参数（位移职责已移交）
-⑤ 补上 BPC_CombatFeedBack + BPC_CameraDirector，以及受击回路
-   Attribute.OnDamageApplied → Combat.EnterHit
-```
+> 玩家运行导图 → [9，运行导图 · 1）玩家运行导图](#1玩家运行导图)
 
 ---
 
@@ -494,72 +473,97 @@ flowchart TD
 
 ---
 
-### 3）EnemyBase运行导图
-
-```mermaid
-flowchart TD
-    Sight([视觉感知]) -->|"AI_HandleSight → AI_AddPerceivedActor"| AI["BPC_AI<br/>感知列表 / 当前目标 / AI 状态"]
-    SelfAttr["自身 BPC_Attribute<br/>受击判定"] -->|"OnDamageApplied<br/>HitOutCome + HitDirection"| AI
-
-    AI -->|"AI_RefreshTarget 写 TargetActor"| BB[("黑板<br/>AIState / TargetActor<br/>HitDirection / bHitPending")]
-    AI -->|"AI_SetAIState 写 AIState"| BB
-
-    BB -.->|只读| BT["BT_EnemyBase<br/>行为树"]
-    AIC["AIC_EnemyBase<br/>AIController"] -->|RunBehaviorTree| BT
-
-    BT -->|"BTT_EnemyAttack → AttackByType"| Trace["BPC_AttackTrace<br/>攻击判定 / 蒙太奇播放"]
-    BT -->|"BTT_PlayHitReaction → PlayHitMontage"| Trace
-
-    Trace -->|"查受击蒙太奇表"| DT[("DT_Reactions<br/>ST_AttackData")]
-    Trace -->|"AttackByType / PlayHitMontage"| ABP["敌人动画蓝图"]
-    Trace -->|SetMotionProfile| Motor["BPC_Motor<br/>招式代码位移"]
-    ABP -->|"ANS_AttackWindow → OnAttackWindow"| Trace
-    ABP -->|"ANS_Move → StartMotion / StopMotion"| Motor
-
-    Trace -->|命中| Target["目标 BPC_Attribute<br/>ReceiveDamage"]
-    Trace -->|PlayHitFeedback| FB["BPC_CombatFeedBack<br/>顿帧 / 音效"]
-```
-
-**三处最容易画错的连线：**
-
-```
-① 行为树不调 BPC_Motor
-   BT 里的 MoveTo 走的是 CharacterMovement（寻路移动），不经过 BPC_Motor。
-   BPC_Motor 只管「招式代码位移」，调用方只有两个：
-     · BPC_AttackTrace（SetMotionProfile）
-     · 动画通知 ANS_Move（StartMotion / StopMotion）
-
-② BPC_AI 与行为树之间没有直接引用
-   两者只通过黑板交换数据，并且是单向的：
-     · BPC_AI 写黑板：AI_RefreshTarget 写 TargetActor，AI_SetAIState 写 AIState
-     · 行为树只读黑板，不会反过来调 BPC_AI 的函数
-
-③ 受击方向和受击等级是一起走的
-   OnDamageApplied 同时带 HitOutCome 和 HitDirection，
-   BPC_AI 把方向写进黑板，Task 读它再传给 PlayHitMontage，
-   中间任何一环都不要自己重新算方向。
-```
-
-**敌人侧和玩家侧的结构差别：**
-
-```
-玩家    输入 → BufferInput → Tick → Combat → 蒙太奇 / Motor / 伤害
-        状态归 BPC_ActionState（组件），受击走 Combat.EnterHit
-
-敌人    感知 → BPC_AI → 写黑板 → BT_EnemyBase 读黑板 → Task
-        没有 BPC_ActionState，状态归 E_AIState，由 BPC_AI 维护并写进黑板
-        受击走 Attribute.OnDamageApplied → BPC_AI.HandleDamageApplied，不做 EnterHit
-
-两边共用：BPI_CharacterBase（取组件）、BPC_Attribute（伤害）、
-          BPC_Motor（招式位移）、BPC_CombatFeedBack（反馈）
-```
-
-**⚠️ 待补：** 敌人目前只有 `BTT_EnemyAttack` / `BTT_PlayHitReaction` 两个自定义 Task，
-`BT_ControlledState` 子树承载受控状态（受击 / 倒地 / 死亡），执行细节需打开行为树核对。
+> 敌人运行导图 → [9，运行导图 · 2）敌人运行导图](#2敌人运行导图)
+> 受击状态机 → [8，功能实现 · 1）敌人受击状态机](#1敌人受击状态机)
 
 ---
 
-### 4）受击状态机
+## 4，WeaponBase（武器基类）
+
+### 1）WeaponBase 类接口方法
+
+#### （1）BPI_WeaponBase
+
+| 方法名             | 输入  | 输出    | 作用             |
+| --------------- | --- | ----- | -------------- |
+| GetWeaponBonus  | /   | float | 获取武器的攻击力加成     |
+| GetWeaponHitBox | /   | 盒体碰撞  | 获取武器碰撞箱        |
+
+---
+
+## 5，其他独立接口
+
+### （1）BPI_GameState（Code/GameState）
+
+| 方法名         | 输入            | 输出   | 作用        |
+| ----------- | ------------- | ---- | --------- |
+| AddToken    | Actor（Holder） | /    | 为持有者登记令牌  |
+| RemoveToken | Actor（Holder） | /    | 移除持有者的令牌  |
+| HasToken    | Actor（Holder） | bool | 查询持有者是否有令牌 |
+
+### （2）BPI_HIt
+
+**已删除。`EnterHit` 已合并进 `BPI_Combat`，签名改为 `EnterHit(E_ActionState HitType, E_HitDirection HitLoc)`。**
+
+### （3）BPI_Interaction
+
+**已删除（原为空壳，0 个函数）。**
+
+---
+
+## 6，写蓝图时的三条硬规矩
+
+```
+① 状态层（BPC_ActionState）不引用任何其他组件
+   它只管 CurrentState、bCanCancel 和转场规则
+
+② 伤害规则全部收在 BPC_Attribute
+   无敌、完美格挡、完美闪避、减伤、削轫、破韧都在这一个地方判定
+
+③ 战斗层负责「用什么参数」，动画通知负责「什么时候」
+   Combat → SetMotionProfile / 调 ReceiveDamage / 调 PlayHitFeedback
+   通知   → Motor.StartMotion / StopMotion（位移窗口和动画帧对齐）
+   Motor  → 只执行，不判断该不该动
+
+   位移**不**经过 Combat。ANS_Move 直连 BPI_Motor
+```
+
+`BPC_CombatFeedBack` **内部再调** `BPC_CameraDirector.Shake`**，Combat 不直接碰 CameraDirector。**
+
+---
+
+## 7，玩家侧动画通知与职责
+
+| 通知                 | 类型          | 调用的接口                                  | 职责                                        |
+| ------------------ | ----------- | -------------------------------------- | ----------------------------------------- |
+| `ANS_AttackWindow` | NotifyState | `BPI_Combat.OnAttackWindow(bool)`      | 开合攻击判定窗口，驱动 AttackTrace 的命中检测             |
+| `ANS_Move`         | NotifyState | `BPI_Motor.StartMotion` / `StopMotion` | 开合代码位移窗口                                  |
+| `ANS_LandCheck`    | NotifyState | 自有逻辑（不经过 Combat）                       | 落地检测                                      |
+| `AN_Cancel`        | Notify      | 目前**未接** `SetCancelWindow`             | 取消窗口时机改由 `ST_AttackData.CancelStart` 数据驱动 |
+
+**三个要点：**
+
+```
+① 通知统一走 BPI_CharacterBase → GetMotorComponent / GetCombatComponent
+   Cast 目标是基类接口，不 Cast To BPI_Player
+   → 敌人挂同一套通知也不用改
+
+② 位移窗口由通知控制，不是「整个蒙太奇都在动」
+   → 前摇不会提前滑出去，位移只发生在配了 ANS_Move 的那一段
+
+③ AN_Cancel 目前是空壳
+   取消窗口由 Combat 按 CancelStart 自己开合
+   要么删掉这个通知，要么改成让它调 SetCancelWindow —— 别两边都做
+```
+
+---
+
+## 8，功能实现
+
+> 单个机制的设计细则：规则、判定顺序、数据来源。
+> 只讲「怎么判」，不讲「谁调谁」—— 组件流转看 [9，运行导图](#9运行导图)。
+
+### 1）敌人受击状态机
 
 敌人没有 `BPC_ActionState`，受击状态由 `BPC_AI` 自己维护。
 **所有转换规则收在 `AI_SetAIState` 一个入口里，行为树只读状态、不做判断。**
@@ -707,87 +711,340 @@ AI_ConsumeHit        → HandledStamp = max(本次 Stamp)，再刷黑板
 
 ---
 
-## 4，WeaponBase（武器基类）
+### 2）完美闪避与无敌帧
 
-### 1）WeaponBase 类接口方法
+#### （1）三个概念必须分开
 
-#### （1）BPI_WeaponBase
+| 概念 | 定义 | 由什么决定 |
+| --- | --- | --- |
+| 无敌帧 | 闪避动作中一段完全免伤的区间 | `ANS_IFrame` → `SetInvincible(bool)` |
+| 完美窗口 | 闪避起手后 N 毫秒 | `NotifyDodgeStart` + `PerfectDodgeWindow`（纯计时） |
+| 奖励 | 判定成功后给什么 | `OnPerfectDodge` 分发器 |
 
-| 方法名             | 输入  | 输出    | 作用             |
-| --------------- | --- | ----- | -------------- |
-| GetWeaponBonus  | /   | float | 获取武器的攻击力加成     |
-| GetWeaponHitBox | /   | 盒体碰撞  | 获取武器碰撞箱        |
+```
+无敌是「一段区间」 → 用动画通知表达，美术能随动作调
+完美是「一个瞬间」 → 用纯计时表达，手感全局统一
+两者完全独立，谁先结束都不影响另一方
+```
+
+#### （2）变量
+
+全部在 `BPC_Attribute`：
+
+| 变量 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `LastDodgeTime` | float | 0 | 闪避起手时刻，由 `NotifyDodgeStart` 写入 |
+| `PerfectDodgeWindow` | float | 0.15 | 完美窗口长度 |
+| `bInvincible` | bool | false | 动画无敌，**只由 `ANS_IFrame` 的 Begin / End 改** |
+| `bInvincibleTail` | bool | false | 取消闪避后的无敌尾巴，**只由内部计时器改** |
+| `PerfectDodgeTailDuration` | float | 0.15 | 尾巴时长 |
+| `TailTimerHandle` | TimerHandle | — | 尾巴计时器 |
+
+**为什么用两个 bool 而不是一个：**
+
+```
+bInvincible       归动画通知管
+bInvincibleTail   归完美闪避管
+
+合并成一个的话：尾巴计时器到期，会把"正在播的下一套闪避动画"的无敌一起关掉
+```
+
+#### （3）判定
+
+**判定写在 `ReceiveDamage` 里，分支见 [BPI_Attribute](#2bpi_attribute) 的 ② 条。**
+**要点只有一句：完美 = `bInvincible` 为真 **且** 在 `PerfectDodgeWindow` 内，两个条件是 AND。**
+
+#### （4）奖励链
+
+`BPC_Attribute` 判定成功 → 主动关 `bInvincible`、开尾巴、广播 `OnPerfectDodge`。
+
+`BPC_Combat` 绑了这个分发器，`HandlePerfectDodge` 按固定顺序执行：
+
+```
+① StopAnimMontage                      停闪避动作
+② Motor.StopMotion()                   停代码位移，否则角色会滑行
+③ ActionState.ClearDodgeCD()           清 CD，玩家可以立刻再闪
+④ ActionState.SetState(Locomotion)     强制回 Locomotion
+⑤ CameraDirector.Shake(PerfectDodge)   震屏
+⑥ 音效
+⑦ CombatFeedBack.PlayPerfectDodgeSlowMo()   慢动作，放最后
+```
+
+**为什么是 `SetState` 而不是 `TryEnterState`：**
+
+```
+闪避刚播了 0.1s，取消窗口根本没开
+TryEnterState 会走转场矩阵判定，直接被拒 → 状态卡在 Dodge
+SetState 不判断，是唯一能满意回 Locomotion 的入口
+```
+
+**⚠️ `SetState` 不做收尾，取消窗口的残留值要顺手清（`SetCancelWindow(false)`）。**
+
+#### （5）一次闪避只奖励一次
+
+**靠「立即取消闪避」实现，不需要额外的防重 flag：**
+
+```
+第一次完美闪避 → 闪避被取消 → bInvincible 关闭
+后续攻击即使还在时间窗口内，也不满足「正在无敌」这个条件
+→ 不会再触发判定
+```
+
+**但「立即取消」会让玩家失去剩余的无敌时间，所以需要尾巴（见下）。**
+
+#### （6）无敌尾巴
+
+```
+没有尾巴：
+   完美闪避 → 取消闪避 → ANS_IFrame 的 End 触发 → 无敌消失
+   敌人三连击，第二段 0.15s 后到达 → 玩家吃满伤害
+   → 玩家："我明明完美闪避了"
+
+有尾巴：
+   完美闪避 → 取消闪避 → bInvincibleTail = true 保持 0.15s
+   → 玩家马上能行动，同时不会被下一段顺手打中
+```
+
+**尾巴和新的闪避动画可以共存 —— 因为它们是两个独立的 bool，判定时取 OR。**
+
+#### （7）慢动作：时间换算
+
+**`PlayPerfectDodgeSlowMo` 用 `SetGlobalTimeDilation` 实现。**
+
+```
+⚠️ Timer 走的是「被膨胀后的时间」
+
+   期望实时 0.25s，膨胀系数 0.3
+   → Timer 值必须是 0.25 × 0.3 = 0.075（游戏时间）
+
+   直接传 0.25 → 实际持续 0.83 实时秒 → 玩家以为卡了
+```
+
+**三条必须防的坑：**
+
+```
+① 永远不要设 0
+   SetGlobalTimeDilation(0) 会让 TimerManager 停止推进
+   → 用来恢复时间的那个 Timer 永不触发 → 永久定格
+
+② 重入要覆盖不要叠加
+   Clear 旧 Timer 再 Set 新的，让后一次覆盖前一次
+
+③ EndPlay 要兜底
+   角色销毁 / 关卡切换时无条件 SetGlobalTimeDilation(1.0)
+```
+
+#### （8）涉及资产与接口
+
+```
+资产   ANS_IFrame                              无敌区间通知
+       Montage_Dodge / Montage_Dodge_Air       各段内挂 ANS_IFrame
+       E_CameraShakeType + PerfectDodge        追加到枚举末尾，别插中间
+       BPC_CameraDirector · Shake 分支          PerfectDodge → BPCS_Perfect
+
+接口   BPI_Attribute    + SetInvincible
+       BPI_CombatFeedBack + PlayPerfectDodgeSlowMo
+       BPI_ActionState  + ClearDodgeCD
+```
 
 ---
 
-## 5，其他独立接口
+### 3）闪避方向（四向）
 
-### （1）BPI_GameState（Code/GameState）
+> **状态：设计已定稿，实现进行中。** 下面只写已经确认的部分，未决项列在最后。
 
-| 方法名         | 输入            | 输出   | 作用        |
-| ----------- | ------------- | ---- | --------- |
-| AddToken    | Actor（Holder） | /    | 为持有者登记令牌  |
-| RemoveToken | Actor（Holder） | /    | 移除持有者的令牌  |
-| HasToken    | Actor（Holder） | bool | 查询持有者是否有令牌 |
+#### （1）数据层
 
-### （2）BPI_HIt
+**`Montage_Dodge` 是合成蒙太奇，四个 Section：`F` / `B` / `L` / `R`，分别对应 `Doge_Combat_{F,B,L,R}_Seq`。**
 
-**已删除。`EnterHit` 已合并进 `BPI_Combat`，签名改为 `EnterHit(E_ActionState HitType, E_HitDirection HitLoc)`。**
+**`DT_Attacks` 用四行区分：**
 
-### （3）BPI_Interaction
+| 行名 | SectionStart | MotionSelf |
+| --- | --- | --- |
+| `Dodge_F` | `F` | (+Speed, 0, 0) |
+| `Dodge_B` | `B` | (−Speed, 0, 0) |
+| `Dodge_L` | `L` | (0, −Speed, 0) |
+| `Dodge_R` | `R` | (0, +Speed, 0) |
 
-**已删除（原为空壳，0 个函数）。**
+**四行共用同一个 `Montage`，只有 `SectionStart` 和 `MotionSelf` 不同。**
+**`Dodge_F_Air` 保持原样，本轮不改。**
+
+#### （2）方向判定
+
+**在 `BP_Player` 里做，`BPC_Combat` 不接触输入。**
+
+```
+① 采样 IA_Move（X 右正 / Y 前正，W = +1）
+② (|X| > 0.2) or (|Y| > 0.2) 才认为有方向，否则默认 Front
+③ X != 0 → X > 0 ? Front : Back
+   X == 0 → Y > 0 ? Right : Left
+④ 调 DoDodge(Direction)
+```
+
+**第 ③ 条是「X 优先」规则，后果是斜向输入一律判成前 / 后，侧闪只在纯 Y 输入时触发。**
+**若要改成「谁大听谁」，把 ③ 换成比较 `|X|` 与 `|Y|`。**
+
+**方向枚举用 `E_Direction`（前后左右上下 6 值），不用 `E_HitDirection`：**
+
+```
+E_Direction     方位通用，用于闪避 / 移动
+E_HitDirection  受击专用，后续会扩到前左 / 前右等 8 方向
+两者语义不同，不要互相替代
+```
+
+#### （3）`DoDodge` 的顺序
+
+```
+① 守卫          CanDodge / IsAlive
+② 连招优先      有可接连招 → 交给连招，直接 Return（状态由连招自己设）
+③ 方向选行      E_Direction → "Dodge_F/B/L/R"
+④ 设朝向        见下
+⑤ 关自动转向    bOrientRotationToMovement = false
+⑥ SetMotionProfile(MotionSelf)
+⑦ PlayMontageByID(Row.ID, Row.SectionStart)
+⑧ SetState(Dodge) / NotifyDodgeStart / UpdateDodgeCD
+```
+
+**④ 必须在 ⑥ 之前 —— 否则 `MotionSelf` 会用旧朝向转成世界向量，表现成"动画对了但人往错方向滑"。**
+
+#### （4）设朝向：对齐参考系，不是转身闪避
+
+```
+有锁定目标 → SetActorRotation(指向目标的 Yaw)
+无锁定目标 → SetActorRotation(ControlRotation 的 Yaw)
+
+理由：分类用的是「原始输入轴」，只有把角色对齐参考系，
+      角色的「前/后/左/右」才等于玩家认知的前/后/左/右
+```
+
+**向后闪不转身 —— 方向由 Section 表达，`bOrientRotationToMovement` 关掉就行。**
+
+#### （5）未决项
+
+```
+① MotionSelf 是角色局部空间还是世界空间（决定四行的数值怎么写）
+② 四段动画的实际位移距离是否一致（不一致要按段调幅值）
+③ 连招解析要不要抽成共享函数（DoLight / DoHeavy 也要用）
+④ 四段是否各自都有 ANS_IFrame（缺一段则那一段无法完美闪避）
+```
 
 ---
 
-## 6，写蓝图时的三条硬规矩
+## 9，运行导图
+
+> 组件之间的实际流转。图上只画调用关系，判断规则看 [8，功能实现](#8功能实现)。
+
+### 1）玩家运行导图
+
+```mermaid
+flowchart TD
+    Input([外部输入]) -->|"BPI_Player<br/>DoLight / DoHeavy / DoDodge / DoJump"| Buffer["BPC_BufferInput<br/>缓存输入 + 过期时间"]
+    Scheduler[["调度者"]] --> Tick["BP_Player Tick"]
+    Buffer -->|"Consume（一帧只吃一个）"| Tick
+
+    Tick -->|"TryEnterState（主动）"| ActionState["BPC_ActionState<br/>状态仲裁 / 取消窗口"]
+    Tick -->|"DoAttack → DoLight / DoHeavy"| Combat["BPC_Combat<br/>连招链 / 蒙太奇 / 受击"]
+
+    Combat -->|PlayAnimMontage| ABP["ABP_Player<br/>角色动画蓝图"]
+    ABP -->|"ANS_AttackWindow → OnAttackWindow"| Combat
+    ABP -->|"ANS_Move → StartMotion / StopMotion"| Motor["BPC_Motor<br/>代码位移"]
+
+    Combat -->|SetMotionProfile| Motor
+    Motor -->|推进位移| Pawn([角色 Pawn])
+
+    Combat -->|ReceiveDamage| EnemyAttr["敌人 BPC_Attribute<br/>算伤害 / 削韧"]
+    SelfAttr["自身 BPC_Attribute"] -->|"OnDamageApplied"| Combat
+    Combat -->|"EnterHit → TryEnterState"| ActionState
+
+    Combat -->|PlayHitFeedback| FB["BPC_CombatFeedBack<br/>顿帧 / 音效"]
+    FB -->|Shake| Cam["BPC_CameraDirector"]
+
+    LockOn["BPC_LockOn<br/>锁定索敌"] -->|修改朝向 / 部分动作| Combat
+    LockOn -->|转向| Pawn
+```
+
+**与手绘原图相比，这一版修正了 5 处：**
 
 ```
-① 状态层（BPC_ActionState）不引用任何其他组件
-   它只管 CurrentState、bCanCancel 和转场规则
-
-② 伤害规则全部收在 BPC_Attribute
-   无敌、完美格挡、完美闪避、减伤、削轫、破韧都在这一个地方判定
-
-③ 战斗层负责「用什么参数」，动画通知负责「什么时候」
-   Combat → SetMotionProfile / 调 ReceiveDamage / 调 PlayHitFeedback
-   通知   → Motor.StartMotion / StopMotion（位移窗口和动画帧对齐）
-   Motor  → 只执行，不判断该不该动
-
-   位移**不**经过 Combat。ANS_Move 直连 BPI_Motor
+① AbP_Player → ABP_Player（拼写）
+② 删掉「BPC_Attribute → 敌人」这条线
+   伤害不是从 Attribute 流向敌人，而是 Combat 调「目标」的 ReceiveDamage
+③ 标签 GetAttack / TakeDamage → ReceiveDamage
+   TakeDamage 是 Attribute 内部自己调的，外部只调 ReceiveDamage
+④ 补上 BPC_Motor：ANS_Move 直连 Motor.StartMotion / StopMotion
+   Combat 只负责 SetMotionProfile 下发参数（位移职责已移交）
+⑤ 补上 BPC_CombatFeedBack + BPC_CameraDirector，以及受击回路
+   Attribute.OnDamageApplied → Combat.EnterHit
 ```
-
-`BPC_CombatFeedBack` **内部再调** `BPC_CameraDirector.Shake`**，Combat 不直接碰 CameraDirector。**
 
 ---
 
-## 7，玩家侧动画通知与职责
+### 2）敌人运行导图
 
-| 通知                 | 类型          | 调用的接口                                  | 职责                                        |
-| ------------------ | ----------- | -------------------------------------- | ----------------------------------------- |
-| `ANS_AttackWindow` | NotifyState | `BPI_Combat.OnAttackWindow(bool)`      | 开合攻击判定窗口，驱动 AttackTrace 的命中检测             |
-| `ANS_Move`         | NotifyState | `BPI_Motor.StartMotion` / `StopMotion` | 开合代码位移窗口                                  |
-| `ANS_LandCheck`    | NotifyState | 自有逻辑（不经过 Combat）                       | 落地检测                                      |
-| `AN_Cancel`        | Notify      | 目前**未接** `SetCancelWindow`             | 取消窗口时机改由 `ST_AttackData.CancelStart` 数据驱动 |
+```mermaid
+flowchart TD
+    Sight([视觉感知]) -->|"AI_HandleSight → AI_AddPerceivedActor"| AI["BPC_AI<br/>感知列表 / 当前目标 / AI 状态"]
+    SelfAttr["自身 BPC_Attribute<br/>受击判定"] -->|"OnDamageApplied<br/>HitOutCome + HitDirection"| AI
 
-**三个要点：**
+    AI -->|"AI_RefreshTarget 写 TargetActor"| BB[("黑板<br/>AIState / TargetActor<br/>HitDirection / bHitPending")]
+    AI -->|"AI_SetAIState 写 AIState"| BB
+
+    BB -.->|只读| BT["BT_EnemyBase<br/>行为树"]
+    AIC["AIC_EnemyBase<br/>AIController"] -->|RunBehaviorTree| BT
+
+    BT -->|"BTT_EnemyAttack → AttackByType"| Trace["BPC_AttackTrace<br/>攻击判定 / 蒙太奇播放"]
+    BT -->|"BTT_PlayHitReaction → PlayHitMontage"| Trace
+
+    Trace -->|"查受击蒙太奇表"| DT[("DT_Reactions<br/>ST_AttackData")]
+    Trace -->|"AttackByType / PlayHitMontage"| ABP["敌人动画蓝图"]
+    Trace -->|SetMotionProfile| Motor["BPC_Motor<br/>招式代码位移"]
+    ABP -->|"ANS_AttackWindow → OnAttackWindow"| Trace
+    ABP -->|"ANS_Move → StartMotion / StopMotion"| Motor
+
+    Trace -->|命中| Target["目标 BPC_Attribute<br/>ReceiveDamage"]
+    Trace -->|PlayHitFeedback| FB["BPC_CombatFeedBack<br/>顿帧 / 音效"]
+```
+
+**三处最容易画错的连线：**
 
 ```
-① 通知统一走 BPI_CharacterBase → GetMotorComponent / GetCombatComponent
-   Cast 目标是基类接口，不 Cast To BPI_Player
-   → 敌人挂同一套通知也不用改
+① 行为树不调 BPC_Motor
+   BT 里的 MoveTo 走的是 CharacterMovement（寻路移动），不经过 BPC_Motor。
+   BPC_Motor 只管「招式代码位移」，调用方只有两个：
+     · BPC_AttackTrace（SetMotionProfile）
+     · 动画通知 ANS_Move（StartMotion / StopMotion）
 
-② 位移窗口由通知控制，不是「整个蒙太奇都在动」
-   → 前摇不会提前滑出去，位移只发生在配了 ANS_Move 的那一段
+② BPC_AI 与行为树之间没有直接引用
+   两者只通过黑板交换数据，并且是单向的：
+     · BPC_AI 写黑板：AI_RefreshTarget 写 TargetActor，AI_SetAIState 写 AIState
+     · 行为树只读黑板，不会反过来调 BPC_AI 的函数
 
-③ AN_Cancel 目前是空壳
-   取消窗口由 Combat 按 CancelStart 自己开合
-   要么删掉这个通知，要么改成让它调 SetCancelWindow —— 别两边都做
+③ 受击方向和受击等级是一起走的
+   OnDamageApplied 同时带 HitOutCome 和 HitDirection，
+   BPC_AI 把方向写进黑板，Task 读它再传给 PlayHitMontage，
+   中间任何一环都不要自己重新算方向。
 ```
+
+**敌人侧和玩家侧的结构差别：**
+
+```
+玩家    输入 → BufferInput → Tick → Combat → 蒙太奇 / Motor / 伤害
+        状态归 BPC_ActionState（组件），受击走 Combat.EnterHit
+
+敌人    感知 → BPC_AI → 写黑板 → BT_EnemyBase 读黑板 → Task
+        没有 BPC_ActionState，状态归 E_AIState，由 BPC_AI 维护并写进黑板
+        受击走 Attribute.OnDamageApplied → BPC_AI.HandleDamageApplied，不做 EnterHit
+
+两边共用：BPI_CharacterBase（取组件）、BPC_Attribute（伤害）、
+          BPC_Motor（招式位移）、BPC_CombatFeedBack（反馈）
+```
+
+**⚠️ 待补：** 敌人目前只有 `BTT_EnemyAttack` / `BTT_PlayHitReaction` 两个自定义 Task，
+`BT_ControlledState` 子树承载受控状态（受击 / 倒地 / 死亡），执行细节需打开行为树核对。
 
 ---
 
-## 8、校对差异清单
+## 10，校对差异清单
 
 以下是本次扫描发现、与旧版 README 不一致的地方。已按「实际资产」更新到上文，这里留档备查。
 
@@ -813,6 +1070,8 @@ AI_ConsumeHit        → HandledStamp = max(本次 Stamp)，再刷黑板
 | 16  | AN_MoveEnd                    | 独立通知                             | **已删除**。`ANS_Move` 的 NotifyEnd 已负责收尾，该通知与它重复                                                                                 |
 | 17  | BPI_Attribute / BPC_Attribute | Code/ActorComponent/DamageSystem | 已迁到 `Code/ActorComponent/Attribute`                                                                                          |
 | 18  | BPI_AI / BPI_AttackTrace      | BPI_AI 9 个、BPI_AttackTrace 2 个；`AI_SetAIState` 无返回值；`HandleDamageApplied` 参数待确认 | BPI_AI 12 个（补 `AI_ResetAIState` / `AI_GetHitStamp` / `AI_ConsumeHit`），`AI_SetAIState` 改为返回 bool；BPI_AttackTrace 3 个（补 `PlayHitMontage`）；`HandleDamageApplied` 参数为 `(E_HitOutCome, E_HitDirection, bool)`；接口总数 82 → 86 |
+| 19  | 完美闪避 / 闪避四向            | 接口总览停在 86，无受击状态机之外的功能章节 | 总数 86 → 90：BPI_Attribute 12→13（`SetInvincible`）、BPI_CombatFeedBack 3→4（`PlayPerfectDodgeSlowMo`）、BPI_ActionState 7→8（`ClearDodgeCD`）、BPI_Player 9→10（`GetCameraComponent`）；新增 `8，功能实现` 与 `9，运行导图` 两个一级模块 |
+| 20  | BPI_Player 相机相关            | 只有 `GetDirectorComponent`          | 已改名为 `GetCameraDirectorComponent`；并新增 `GetCameraComponent`（返回 UE 的 `CameraComponent`，与 `BPC_CameraDirector` 不是一回事，两者可同时存在） |
 
 ### 需要在编辑器里处理的遗留问题
 
