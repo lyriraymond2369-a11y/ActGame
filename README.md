@@ -72,9 +72,9 @@
 | 接口                       | 目录                                 | 函数数 | 对应实现               |
 | ------------------------ | ---------------------------------- | --- | ------------------ |
 | BPI_CharacterBase        | Code/Interface                     | 8   | 无（纯接口，所有组件获取的统一入口） |
-| BPI_Attribute            | Code/ActorComponent/Attribute      | 13  | BPC_Attribute      |
+| BPI_Attribute            | Code/ActorComponent/Attribute      | 14  | BPC_Attribute      |
 | BPI_CombatFeedBack       | Code/ActorComponent/CombatFeedBack | 4   | BPC_CombatFeedBack |
-| BPI_Motor                | Code/ActorComponent/Motor          | 8   | BPC_Motor          |
+| BPI_Motor                | Code/ActorComponent/Motor          | 9   | BPC_Motor          |
 | BPI_WeaponBase           | Code/Weapon                        | 2   | BP_WeaponBase      |
 | BPI_GameState            | Code/GameState                     | 3   | 待接入                |
 | BPI_Player               | Player                             | 10  | BP_Player          |
@@ -87,7 +87,7 @@
 | BPI_AttackTrace          | Enemy/Component/AttackTrace        | 3   | BPC_AttackTrace    |
 | BPI_AI                   | Enemy/Component/AI                 | 12  | BPC_AI             |
 
-合计 90 个接口函数。
+合计 92 个接口函数。
 
 ---
 
@@ -134,6 +134,7 @@
 | ExitGuard        | /                                    | /                      | 退出格挡                                            |
 | NotifyDodgeStart | float（Time）                          | /                      | 记录闪避起手时刻，供完美闪避窗口判定使用                            |
 | SetInvincible    | bool（bInvincible）                     | /                      | 开关无敌。由 `ANS_IFrame` 的 Begin / End 调用              |
+| EndPerfectDodge  | /                                    | /                      | 完美闪避收尾：若仍在无敌则关无敌并补一段尾巴。由 Combat 调用 |
 
 `ReceiveDamage` **的三个输出含义：**
 
@@ -180,6 +181,7 @@
 | IsBeingKnockedBack | /                           | bool | 当前是否在被击退         |
 | SetGravity         | float（Scale）               | /    | 设置重力倍率           |
 | ResetGravity       | /                           | /    | 重力恢复默认值          |
+| SetMotionScale     | float（Scale）               | /    | 位移速度倍率。完美闪避时降到 0.3 控距离，收尾必须复位为 1.0 |
 
 ### 2）CharacterBase 数据类型
 
@@ -729,18 +731,38 @@ AI_ConsumeHit        → HandledStamp = max(本次 Stamp)，再刷黑板
 
 #### （2）变量
 
-全部在 `BPC_Attribute`：
+**`BPC_Attribute`** —— 判定层
 
 | 变量 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
 | `LastDodgeTime` | float | 0 | 闪避起手时刻，由 `NotifyDodgeStart` 写入 |
 | `PerfectDodgeWindow` | float | 0.15 | 完美窗口长度 |
 | `bInvincible` | bool | false | 动画无敌，**只由 `ANS_IFrame` 的 Begin / End 改** |
-| `bInvincibleTail` | bool | false | 取消闪避后的无敌尾巴，**只由内部计时器改** |
+| `bInvincibleTail` | bool | false | 收尾时补的无敌尾巴，**只由内部计时器改** |
 | `PerfectDodgeTailDuration` | float | 0.15 | 尾巴时长 |
 | `TailTimerHandle` | TimerHandle | — | 尾巴计时器 |
+| `bPerfectDodgeUsed` | bool | false | 本轮闪避是否已奖励过，由 `NotifyDodgeStart` 复位 |
 
-**为什么用两个 bool 而不是一个：**
+**`BPC_Combat`** —— 收尾层
+
+| 变量 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `PerfectDodgeCancelDelay` | float | 0.25 | 收尾的时间上限，**早于慢动作结束**，见（6） |
+| `PerfectDodgeMaxDistance` | float | 150 | 收尾的距离上限，**从完美闪避判定成功点累计** |
+| `DodgeStartLocation` | Vector | — | 判定成功时的位置，`HandlePerfectDodge` 里记录 |
+| `PerfectDodgeFinishTimer` | TimerHandle | — | 时间上限计时 |
+| `bPerfectDodgePending` | bool | false | 是否处于「已判定成功、待收尾」状态 |
+
+**`BPC_CombatFeedBack`** —— 表现层
+
+| 变量 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `SlowMoScale` | float | 0.1 | 敌人时间倍率 |
+| `SlowMoDuration` | float | 0.5 | 慢动作的**实时**秒数 |
+| `SlowMoActors` | Actor 数组 | 空 | 本轮被减速的敌人 |
+| `SlowMoTimerHandle` | TimerHandle | — | 单次重入用 |
+
+**`bInvincible` 与 `bInvincibleTail` 为什么用两个 bool 而不是一个：**
 
 ```
 bInvincible       归动画通知管
@@ -752,89 +774,291 @@ bInvincibleTail   归完美闪避管
 #### （3）判定
 
 **判定写在 `ReceiveDamage` 里，分支见 [BPI_Attribute](#2bpi_attribute) 的 ② 条。**
-**要点只有一句：完美 = `bInvincible` 为真 **且** 在 `PerfectDodgeWindow` 内，两个条件是 AND。**
+**要点只有一句：完美 = `bInvincible` 为真，且处于 `PerfectDodgeWindow` 内 —— 两个条件是 AND。**
 
-#### （4）奖励链
+#### （4）判定成功后发生什么
 
-`BPC_Attribute` 判定成功 → 主动关 `bInvincible`、开尾巴、广播 `OnPerfectDodge`。
-
-`BPC_Combat` 绑了这个分发器，`HandlePerfectDodge` 按固定顺序执行：
+**判定层只做两件事：置 flag、广播。所有收尾动作都不在这一层。**
 
 ```
-① StopAnimMontage                      停闪避动作
-② Motor.StopMotion()                   停代码位移，否则角色会滑行
-③ ActionState.ClearDodgeCD()           清 CD，玩家可以立刻再闪
-④ ActionState.SetState(Locomotion)     强制回 Locomotion
-⑤ CameraDirector.Shake(PerfectDodge)   震屏
-⑥ 音效
-⑦ CombatFeedBack.PlayPerfectDodgeSlowMo()   慢动作，放最后
+ReceiveDamage 的 ② 条：
+   bPerfectDodgeUsed == false ?
+      → bPerfectDodgeUsed = true
+      → Broadcast OnPerfectDodge
+   return (Ignore, false, true)
 ```
 
-**为什么是 `SetState` 而不是 `TryEnterState`：**
+**⚠️ 这里**不要**关 `bInvincible`、不要给尾巴、不要停动作 —— 闪避动画还要继续播。**
+
+`BPC_Combat` 绑了 `OnPerfectDodge`，`HandlePerfectDodge` 只施加效果、不做收尾：
+
+```
+① CameraDirector.Shake(PerfectDodge)          震屏
+② 音效
+③ CombatFeedBack.PlayPerfectDodgeSlowMo()     只慢敌人
+④ Motor.SetMotionScale(0.3)                   位移衰减，控距离
+⑤ bPerfectDodgePending = true
+   Set Timer(PerfectDodgeCancelDelay → TryFinishPerfectDodge)
+```
+
+**为什么不立即取消动画：**
+
+```
+立即取消 → 玩家停在 Locomotion 站姿，敌人在 0.1 倍速里挥刀
+          → 画面不协调，像卡住了
+
+继续播   → 玩家在慢动作里把闪避动作走完，敌人几乎不动
+          → 这才是「我躲开了」该有的画面
+```
+
+#### （5）防重复：`bPerfectDodgeUsed`
+
+**因为判定成功后动画不取消，`bInvincible` 还在、窗口还开着 —— 第二段攻击会再次触发。**
+
+```
+NotifyDodgeStart   →  bPerfectDodgeUsed = false
+判定成功           →  只有 false 时才广播，然后置 true
+```
+
+**这是「一次闪避只奖励一次」的唯一保证。不能靠"动作被取消了"来兜底，因为动作现在不取消。**
+
+#### （6）收尾：时间与距离取先到
+
+**收尾由两个条件之一触发：**
+
+```
+时间上限   PerfectDodgeCancelDelay 到点
+距离上限   从闪避起点累计的位移 ≥ PerfectDodgeMaxDistance
+```
+
+**为什么不能只用时间：**
+
+```
+闪避位移是 MotionSelf + Motor 驱动的，有加速度和摩擦衰减
+同样的 0.25s：
+   前闪可能滑出 500 单位
+   后闪可能只有 200 单位
+   → 一个够得着敌人，一个够不着
+
+时间只能保证"动画播了多久"，保证不了"离敌人多远"
+```
+
+**⚠️ 距离从**判定成功点**算，不是从闪避起点算：**
+
+```
+150 这个值小于"闪避起手到被打中"之间已经走掉的位移
+（闪避 0.05s 起手、0.1s 被打，这时已经滑了 ~200）
+
+如果从起点算 → 判定成功的瞬间就超限 → 收尾立即触发
+             → 退化成"立刻取消动画"，正好是这套设计要避免的
+
+从判定点算 → 玩家还能再滑 150，配合 0.3 的位移衰减，约 0.1~0.15s
+```
+
+**所以记录位置的地方不是 `DoDodge`，而是判定成功的那一刻。**
+
+**`PerfectDodgeMaxDistance` 的倒推公式（算的是"判定之后还能滑多远"）：**
+
+```
+延伸攻击射程 − 判定时已滑出的距离 − 攻击自带前冲 + 余量 ≈ 150
+```
+
+**更彻底的做法是让延伸攻击自带前冲/吸附** —— 那样"闪避别跑太远"就从硬约束降成软约束。
+
+`Tick` 里的距离检查：
+
+```
+Tick
+   Branch: bPerfectDodgePending == true
+      Distance = Length(角色当前位置 − DodgeStartLocation)
+      Branch: Distance >= PerfectDodgeMaxDistance → TryFinishPerfectDodge()
+```
+
+`TryFinishPerfectDodge` 的固定顺序：
+
+```
+① 守卫      bPerfectDodgePending / 当前 State 仍是 Dodge
+② 无敌收尾   Attribute.EndPerfectDodge()
+③ 动画收尾   Montage_Stop(0.12, 当前闪避蒙太奇)
+④ 位移收尾   Motor.StopMotion() + Motor.SetMotionScale(1.0)
+⑤ 行动权     ActionState.ClearDodgeCD()
+⑥ 状态       ActionState.SetState(Locomotion)
+```
+
+**为什么用 `SetState` 而不是 `TryEnterState`：**
 
 ```
 闪避刚播了 0.1s，取消窗口根本没开
-TryEnterState 会走转场矩阵判定，直接被拒 → 状态卡在 Dodge
+TryEnterState 走转场矩阵，直接被拒 → 状态卡在 Dodge
 SetState 不判断，是唯一能满意回 Locomotion 的入口
 ```
 
 **⚠️ `SetState` 不做收尾，取消窗口的残留值要顺手清（`SetCancelWindow(false)`）。**
 
-#### （5）一次闪避只奖励一次
-
-**靠「立即取消闪避」实现，不需要额外的防重 flag：**
+**⚠️ 动画收尾必须用 `Montage_Stop(0.12)`，不能用 `StopAnimMontage`：**
 
 ```
-第一次完美闪避 → 闪避被取消 → bInvincible 关闭
-后续攻击即使还在时间窗口内，也不满足「正在无敌」这个条件
-→ 不会再触发判定
+StopAnimMontage      默认 blend out 极短 → "啪"一下站住
+Montage_Stop(0.12)   0.12 秒淡出 → 能接上 Locomotion
 ```
 
-**但「立即取消」会让玩家失去剩余的无敌时间，所以需要尾巴（见下）。**
+#### （7）无敌尾巴：只在需要时补
 
-#### （6）无敌尾巴
-
-```
-没有尾巴：
-   完美闪避 → 取消闪避 → ANS_IFrame 的 End 触发 → 无敌消失
-   敌人三连击，第二段 0.15s 后到达 → 玩家吃满伤害
-   → 玩家："我明明完美闪避了"
-
-有尾巴：
-   完美闪避 → 取消闪避 → bInvincibleTail = true 保持 0.15s
-   → 玩家马上能行动，同时不会被下一段顺手打中
-```
-
-**尾巴和新的闪避动画可以共存 —— 因为它们是两个独立的 bool，判定时取 OR。**
-
-#### （7）慢动作：时间换算
-
-**`PlayPerfectDodgeSlowMo` 用 `SetGlobalTimeDilation` 实现。**
+**尾巴不是恒定给的，是「收尾时如果还在无敌，就补平」。**
 
 ```
-⚠️ Timer 走的是「被膨胀后的时间」
+收尾发生在 t，ANS_IFrame 的 End 在 t_End
 
-   期望实时 0.25s，膨胀系数 0.3
-   → Timer 值必须是 0.25 × 0.3 = 0.075（游戏时间）
-
-   直接传 0.25 → 实际持续 0.83 实时秒 → 玩家以为卡了
+情况 A：t > t_End   → bInvincible 已是 false，无敌自然结束，不需要尾巴
+情况 B：t < t_End   → 停蒙太奇会掐断 ANS，End 不一定触发
+                   → 必须显式关 bInvincible，并补一段尾巴
 ```
 
-**三条必须防的坑：**
+**这个判断放在 `EndPerfectDodge` 内部：**
 
 ```
-① 永远不要设 0
-   SetGlobalTimeDilation(0) 会让 TimerManager 停止推进
-   → 用来恢复时间的那个 Timer 永不触发 → 永久定格
-
-② 重入要覆盖不要叠加
-   Clear 旧 Timer 再 Set 新的，让后一次覆盖前一次
-
-③ EndPlay 要兜底
-   角色销毁 / 关卡切换时无条件 SetGlobalTimeDilation(1.0)
+EndPerfectDodge()
+   ├─ Branch: bInvincible == false → 什么都不做
+   └─ Branch: bInvincible == true
+         ├─ SetInvincible(false)
+         ├─ bInvincibleTail = true
+         └─ Set Timer(PerfectDodgeTailDuration → 关尾巴)
 ```
 
-#### （8）涉及资产与接口
+**为什么不让外部自己判断"要不要尾巴"：**
+
+```
+外部需要知道 bInvincible 当前值，那是内部状态
+暴露 getter 等于把判定层的职责泄漏到收尾层
+→ 只给一个语义明确的入口，判断留在 Attribute
+```
+
+**没有尾巴会发生什么：**
+
+```
+完美闪避 → 收尾掐断无敌 → 敌人三连击第二段到达 → 玩家吃满伤害
+玩家："我明明完美闪避了"
+```
+
+#### （8）慢动作：只慢敌人
+
+**用 `CustomTimeDilation` 挂在敌人身上，不碰全局时间。**
+
+```
+PlayPerfectDodgeSlowMo()
+   ├─ 若 SlowMoActors 非空 → 先 RestoreSlowMo()          ← 防叠加
+   ├─ Clear and Invalidate Timer(SlowMoTimerHandle)
+   ├─ ForEach GetAllActorsOfClass(BP_EnemyBase)
+   │     IsValid? → Set CustomTimeDilation(SlowMoScale)
+   │              → Add 到 SlowMoActors
+   └─ Set Timer by Event(SlowMoDuration → RestoreSlowMo)
+
+RestoreSlowMo()
+   ├─ ForEach SlowMoActors → IsValid? → Set CustomTimeDilation(1.0)
+   └─ SlowMoActors 清空
+
+EndPlay → RestoreSlowMo()      兜底
+```
+
+**为什么不用全局膨胀：**
+
+```
+全局慢    → 玩家也慢，等于只是"顿了一下"，没有行动优势
+只慢敌人  → 玩家真的获得了时间差，可以走位、绕后、反击
+```
+
+**逐角色膨胀还顺手省掉了一整段换算：**
+
+```
+全局膨胀时：Timer 值 = 实时时长 × 膨胀系数（还得防 0 导致 Timer 停摆）
+逐角色时：  全局始终是 1.0，Timer 直接用实时秒数
+```
+
+**四条必须处理的坑：**
+
+```
+① CustomTimeDilation 不影响 Timer
+   敌人"想得快、动得慢" —— 通常反而是好事，但要知道它存在
+
+② 慢动作期间敌人被击杀
+   SlowMoActors 里是失效引用 → 恢复时必须逐个 IsValid
+
+③ 重入要 Set 不要乘
+   Set 0.1 就是 0.1；写乘会变成 0.01，敌人基本静止
+   重入前先 RestoreSlowMo 把上一轮还原
+
+④ 遍历全场敌人是"省事但粗糙"
+   更精细的做法是只慢攻击者，但那需要攻击者引用
+   （ReceiveDamage 目前只有 ImpactLocation，没有 Attacker）
+```
+
+#### （9）位移衰减与倍率复位
+
+**`Motor.SetMotionScale(0.3)` 是「粘性」状态，不是一次性参数。**
+
+```
+完美闪避 → SetMotionScale(0.3)
+   ↓ 收尾忘记复位
+之后所有招式位移只有三成速度
+   ↓
+玩家觉得"手感突然变肉"，但不会报任何错
+```
+
+**复位点必须收口，三条路径全覆盖：**
+
+| 路径 | 复位 | 说明 |
+| --- | --- | --- |
+| `TryFinishPerfectDodge` | ✅ | 主路径 |
+| `InterruptPerfectDodge`（受击 / 死亡打断） | ✅ | 慢动作期间被打 |
+| `DoDodge` 开头 | ✅ 防御性 | 万一上面漏了 |
+
+```
+InterruptPerfectDodge()
+   ├─ bPerfectDodgePending = false
+   ├─ Clear and Invalidate Timer(PerfectDodgeFinishTimer)
+   └─ Motor.SetMotionScale(1.0)
+```
+
+**`InterruptPerfectDodge` 要接到 `EnterHit` 和死亡处理的开头** —— 否则慢动作期间被打断时，`Tick` 里的距离检查还会试图 `SetState(Locomotion)`，把受击状态覆盖掉。
+
+#### （10）完整时间轴
+
+**以下按实际值代入（`CancelDelay` 0.25 / `SlowMo` 0.1 × 0.5s）：**
+
+```
+t = 0.00   DoDodge：选行 / 设朝向 / SetMotionScale(1.0) / SetMotionProfile / 播放
+t = 0.05   ANS_IFrame Begin → bInvincible = true
+t = 0.10   被打 → 判定成功
+           ├─ bPerfectDodgeUsed = true + 广播 OnPerfectDodge
+           ├─ 震屏 + 音效
+           ├─ 敌人变慢（0.1 倍，持续 0.5 实时秒）
+           ├─ Motor.SetMotionScale(0.3)
+           └─ 记录当前位置，开启收尾监视
+t = 0.10~0.35   动画继续播，无敌继续，玩家滑得慢，敌人几乎定格
+t = 0.35   收尾（时间到点；或中途位移超 150 提前触发）
+           ├─ EndPerfectDodge（按需关无敌 + 尾巴）
+           ├─ Montage_Stop(0.12)
+           ├─ StopMotion + SetMotionScale(1.0)
+           ├─ ClearDodgeCD
+           └─ SetState(Locomotion)
+t = 0.35~0.60   ★ 玩家已经自由，敌人还在 0.1 倍速里
+t = 0.60   敌人恢复
+```
+
+**⭐ 这组数值最关键的一点：`收尾在 0.35，慢动作到 0.60`。**
+
+```
+PerfectDodgeCancelDelay 0.25  <  SlowMoDuration 0.5
+
+→ 玩家提前 0.25s 拿回行动权
+→ 这 0.25s 里敌人只有 0.1 倍速（只推进了 0.025s 的动作）
+→ 这 0.25s 就是"延伸攻击"的窗口，几乎白送
+```
+
+**慢动作恢复与收尾是两个独立计时器** —— 前者控敌人，后者控玩家。
+**不要为了对齐把这两个数值耦合死，它们的差值本身就是奖励的一部分。**
+
+#### （11）涉及资产与接口
 
 ```
 资产   ANS_IFrame                              无敌区间通知
@@ -842,9 +1066,14 @@ SetState 不判断，是唯一能满意回 Locomotion 的入口
        E_CameraShakeType + PerfectDodge        追加到枚举末尾，别插中间
        BPC_CameraDirector · Shake 分支          PerfectDodge → BPCS_Perfect
 
-接口   BPI_Attribute    + SetInvincible
+接口   BPI_Attribute      + SetInvincible / EndPerfectDodge
        BPI_CombatFeedBack + PlayPerfectDodgeSlowMo
-       BPI_ActionState  + ClearDodgeCD
+       BPI_ActionState    + ClearDodgeCD
+       BPI_Motor          + SetMotionScale
+
+常量   Motor.SetMotionScale 衰减倍率      0.3
+       Montage_Stop blend out            0.12
+       Dodge_F 行的 MotionSelf 幅值       要能被 0.3 衰减后仍有可读的位移
 ```
 
 ---
@@ -875,14 +1104,40 @@ SetState 不判断，是唯一能满意回 Locomotion 的入口
 
 ```
 ① 采样 IA_Move（X 右正 / Y 前正，W = +1）
-② (|X| > 0.2) or (|Y| > 0.2) 才认为有方向，否则默认 Front
-③ X != 0 → X > 0 ? Front : Back
-   X == 0 → Y > 0 ? Right : Left
+② (|X| > 0.2) or (|Y| > 0.2) ?
+     有输入 → X != 0 ? (X > 0 ? Front : Back)
+                      : (Y > 0 ? Right : Left)
+     无输入 → ③
+③ 无输入时按索敌状态决定默认方向
+     LockOn.GetLockState() == None → Front
+     LockOn.GetLockState() == Soft → Right
+     LockOn.GetLockState() == Hard → Right
 ④ 调 DoDodge(Direction)
 ```
 
-**第 ③ 条是「X 优先」规则，后果是斜向输入一律判成前 / 后，侧闪只在纯 Y 输入时触发。**
-**若要改成「谁大听谁」，把 ③ 换成比较 `|X|` 与 `|Y|`。**
+**默认方向规则：**
+
+```
+有方向输入 → 永远以玩家输入为准，索敌状态不覆盖
+无方向输入 + 无索敌 → 默认前闪
+无方向输入 + 软锁或硬锁 → 默认右闪
+```
+
+**因此这里不使用敌人距离阈值 —— 索敌状态本身就是是否默认右闪的依据。**
+
+**⚠️ 默认右闪的「右」是相对参考系的右：**
+
+```
+硬锁 → 参考系 = 锁定目标      → 绕目标右侧侧闪
+软锁 → 参考系 = 候选/索敌目标 → 同上
+无索敌 → 参考系 = 相机         → 相对相机的右侧
+
+因为 Combat 会在播蒙太奇前把朝向对齐参考系（见（4）），
+所以 BP_Player 只要给出「Right」这个枚举值，不需要自己算方向向量
+```
+
+**② 是「X 优先」规则：斜向输入一律判成前 / 后，侧闪只在纯 Y 输入时触发。**
+**若要改成「谁大听谁」，把 ② 换成比较 `|X|` 与 `|Y|`。**
 
 **方向枚举用 `E_Direction`（前后左右上下 6 值），不用 `E_HitDirection`：**
 
@@ -1072,6 +1327,8 @@ flowchart TD
 | 18  | BPI_AI / BPI_AttackTrace      | BPI_AI 9 个、BPI_AttackTrace 2 个；`AI_SetAIState` 无返回值；`HandleDamageApplied` 参数待确认 | BPI_AI 12 个（补 `AI_ResetAIState` / `AI_GetHitStamp` / `AI_ConsumeHit`），`AI_SetAIState` 改为返回 bool；BPI_AttackTrace 3 个（补 `PlayHitMontage`）；`HandleDamageApplied` 参数为 `(E_HitOutCome, E_HitDirection, bool)`；接口总数 82 → 86 |
 | 19  | 完美闪避 / 闪避四向            | 接口总览停在 86，无受击状态机之外的功能章节 | 总数 86 → 90：BPI_Attribute 12→13（`SetInvincible`）、BPI_CombatFeedBack 3→4（`PlayPerfectDodgeSlowMo`）、BPI_ActionState 7→8（`ClearDodgeCD`）、BPI_Player 9→10（`GetCameraComponent`）；新增 `8，功能实现` 与 `9，运行导图` 两个一级模块 |
 | 20  | BPI_Player 相机相关            | 只有 `GetDirectorComponent`          | 已改名为 `GetCameraDirectorComponent`；并新增 `GetCameraComponent`（返回 UE 的 `CameraComponent`，与 `BPC_CameraDirector` 不是一回事，两者可同时存在） |
+| 21  | 完美闪避的收尾方式              | 文档写的是「判定成功即立即取消闪避 + 全局时间膨胀」 | 改为「动画继续播，靠时间 / 距离先到收尾 + 只慢敌人」：新增 `EndPerfectDodge`（尾巴判断收进 Attribute）、`SetMotionScale`（位移衰减），接口总数 90 → 92；`bPerfectDodgeUsed` 成为防重复的唯一保证 |
+| 22  | 闪避的默认方向                  | 无输入一律前闪                        | 无输入时按索敌状态决定：`E_LockOnState` 为 `Soft` / `Hard` → 默认右闪，`None` → 默认前闪；有输入时永远以输入为准。不使用距离阈值 |
 
 ### 需要在编辑器里处理的遗留问题
 
