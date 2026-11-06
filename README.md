@@ -52,6 +52,7 @@
     - [1）敌人受击状态机](#1敌人受击状态机) —— 等级、优先级、幂等与重播
     - [2）完美闪避与无敌帧](#2完美闪避与无敌帧) —— 无敌区间 / 完美窗口 / 奖励链
     - [3）闪避方向（四向）](#3闪避方向四向) —— 方向判定、参考系对齐、四行数据
+    - [4）动作位移：水平与垂直冲量必须分开处理](#4动作位移水平与垂直冲量必须分开处理) —— 近身撞人时上挑被吞的原因
 - [9，运行导图](#9运行导图) —— 组件之间的实际流转
     - [1）玩家运行导图](#1玩家运行导图) —— 输入到伤害
     - [2）敌人运行导图](#2敌人运行导图) —— 感知到伤害
@@ -1222,6 +1223,159 @@ t = 0.35~0.75   5 个残影各自淡出销毁
 只亮身体、衣服是原材质     → 材质槽只设了 index 0
 ```
 
+#### （13）反击窗口：同样的按键，不同的起手
+
+**核心：反击不是新输入，而是"同一颗按键在窗口内被解析成不同的起始行"。**
+
+```
+E_InputType 只有 Light / Heavy / Dodge / Jump / Execute
+→ 没有、也不需要 "Counter" 这个输入
+→ 变化发生在 DoLight / DoHeavy 的**选行**这一步
+```
+
+**为什么这样最省事：**
+
+```
+① 连招系统天然复用 —— Counter_L1 → L2 → L3 就是普通连招，只是行名不同
+② 状态机不动 —— 反击期间依然是 Attack 状态
+③ 输入层不动 —— 不需要新的 InputAction、不需要改 BufferInput
+④ 过期即失效 —— 窗口一关就自动回到普通轻重击，不需要额外复位
+```
+
+**⭐ 因为连招推进用的是 `ST_AttackData.Next` 行名跳转（不是字符串拼接），所以**只有"起手选行"需要分支，连招推进完全由数据驱动，这一步一行都不用改。**
+
+**变量（`BPC_Combat`）：**
+
+| 变量 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `bCounterWindowOpen` | bool | false | 是否处于反击窗口 |
+| `CounterWindowDuration` | float | 1.0 | 窗口时长，从收尾时刻算 |
+| `CounterTimerHandle` | TimerHandle | — | |
+| `bCounterUsed` | bool | false | 本轮是否已消费过反击起手 |
+
+**窗口从**收尾**开始算，不是从判定成功算：**
+
+```
+0.10~0.35 玩家锁在闪避动作里，按不出攻击
+从 0.35 收尾那一刻开始计时，才是玩家真正"能按"的时间
+若从 0.10 算，可用时间会凭空少 0.25s
+```
+
+**开窗与关窗：**
+
+```
+OpenCounterWindow()
+  ├─ bCounterWindowOpen = true
+  ├─ bCounterUsed = false
+  ├─ Clear and Invalidate Timer(CounterTimerHandle)
+  └─ Set Timer(CounterWindowDuration → CloseCounterWindow)
+
+CloseCounterWindow()
+  ├─ bCounterWindowOpen = false
+  └─ bCounterUsed = false
+```
+
+**⚠️ `OpenCounterWindow` 必须排在 `SetState(Locomotion)` **之前**：**
+
+```
+玩家可能在 0.35 之前就按了攻击 → 进 BufferInput 缓存
+收尾回 Locomotion 后消费缓存 → 触发 DoLight
+如果开窗晚于 SetState，缓存消费可能赶在开窗之前，反击判定落空
+```
+
+**选行前缀：**
+
+```
+GetAttackRowPrefix(bIsHeavy : bool) → String
+  ├─ Branch: bCounterWindowOpen == true AND bCounterUsed == false
+  │     → 返回 bIsHeavy ? "Counter_H" : "Counter_L"
+  └─ 否则
+        → 返回 bIsHeavy ? "Heavy" : "Attack"
+```
+
+**`DoLight` / `DoHeavy` 的改动只有两处：**
+
+```
+① 起手行 = GetAttackRowPrefix(自身类型) + "1"
+   ← 只在"开一条新连招"时用；已经在连招中则继续走 CurrentAttack.Next
+
+② 若起手行以 "Counter" 开头 → bCounterUsed = true（消费掉）
+```
+
+**⭐ 最容易写错的一句：**
+
+```
+不要在每次 DoLight / DoHeavy 时都按窗口强制选反击起手
+只有「开始一条新连招」才选起手行
+正在连招中必须优先沿用 CurrentAttack.Next
+否则反击连招会被自己打断成"永远在打第一段"
+```
+
+**数据行（`DT_Attacks`）：**
+
+| 行名 | `Next` 指向 |
+| --- | --- |
+| `Counter_L1` | `Counter_L2` |
+| `Counter_L2` | `Counter_L3` |
+| `Counter_L3` | `Counter_L4` |
+| `Counter_L4` | 空（收招） |
+| `Counter_H1` | `Counter_H2` |
+| `Counter_H2` | `Counter_H3` |
+| `Counter_H3` | 空（收招） |
+
+**`MotionSelf` 建议带向前位移：**
+
+```
+完美闪避后玩家离敌人最多 150（PerfectDodgeMaxDistance）
+反击第一段向前冲 150~250
+→ 即使闪避把人带远了，反击也能自己补上
+→ "闪避别跑太远"从硬约束降成软约束
+```
+
+**时序：**
+
+```
+t = 0.35   收尾
+           ├─ Player.StopAfterimage()
+           ├─ OpenCounterWindow()        ← 先开窗
+           └─ SetState(Locomotion)       ← 再交还控制权
+t = 0.35~1.35   ★ 反击窗口（1.0s）
+              按轻击 → Counter_L1 → L2 → L3 → L4
+              按重击 → Counter_H1 → H2 → H3
+t = 1.35   CloseCounterWindow()
+           → 之后再按，回到 Attack1 / Heavy
+```
+
+**窗口只控制"能不能起手"，不控制"能不能续接"：**
+
+```
+窗口 1.35 关闭，但玩家已经打出 Counter_L2
+→ Counter_L2 的 Next 仍然指向 Counter_L3
+→ 连招照常继续，不会被计时器腰斩
+
+这是 Next 链结构带来的天然好处：续接属于数据，不受窗口影响
+```
+
+**清理路径（三条，缺一不可）：**
+
+```
+EnterHit              → CloseCounterWindow()    挨打就没了
+死亡                   → CloseCounterWindow()
+DoDodge（重新闪避）    → CloseCounterWindow()    开新一轮，旧窗口作废
+```
+
+**⚠️ 和 `bSlowMoActive` / `bPerfectDodgeUsed` 同一类问题：窗口是状态量，必须显式关闭。少了 `DoDodge` 那一处，会出现"闪避失败后仍能打出反击"。**
+
+**每轮只奖励一次起手：**
+
+```
+窗口内打出 Counter_L1 → bCounterUsed = true
+→ 窗口剩余时间里再按攻击 → 前缀回落到 Attack / Heavy
+→ 但已经开始的反击连招继续按 Next 走完
+```
+
+**这就是 `bCounterUsed` 与 `CurrentAttack.Next` 的分工：前者管"能不能起手"，后者管"能不能续接"。**
+
 ---
 
 ### 3）闪避方向（四向）
@@ -1327,6 +1481,81 @@ E_HitDirection  受击专用，后续会扩到前左 / 前右等 8 方向
 ② 四段动画的实际位移距离是否一致（不一致要按段调幅值）
 ③ 连招解析要不要抽成共享函数（DoLight / DoHeavy 也要用）
 ④ 四段是否各自都有 ANS_IFrame（缺一段则那一段无法完美闪避）
+```
+
+---
+
+### 4）动作位移：水平与垂直冲量必须分开处理
+
+**约定：`MotionSelf` 里的水平分量（Forward / Right）与垂直分量（Up）在 `BPC_Motor` 内部**分开移动**，不合成一个 Sweep。**
+
+```
+水平 Delta = ForwardVector × Forward + RightVector × Right   → 一次移动（Sweep）
+垂直 Delta = UpVector × Up                                   → 另一次移动（Sweep）
+```
+
+**为什么必须分开 —— 这是一个真实踩过的坑：**
+
+```
+动作数据：Forward = 300, Up = 150
+
+合成成一个 Sweep 时：
+   离敌人近 → 前方撞到敌人胶囊体 → 整个位移被阻挡/投影
+            → 向上分量一起被吞掉，角色跳不起来
+   离敌人稍远 → 没有碰撞 → 垂直分量正常
+
+表现就是"距离近就没有上挑，退后半步就好了"，
+而且不会报任何错，极难定位到碰撞上
+```
+
+**关键判断：**
+
+```
+这个现象**不是数据表的问题，也不是冲量叠加的问题**
+——同一个动作在近距离失效、远距离正常，只可能是碰撞相关的分支
+→ 优先查 Motor 里是否把水平与垂直合成了一个 Delta
+```
+
+**如果分开之后仍然被吞，按这个顺序继续查：**
+
+```
+① 移动后是否又把 Z 强制贴回地面
+   Snap To Floor / Move Along Floor / 每帧 Set Actor Location 复用当前 Z
+   → 垂直到位了又被压回去
+
+② 碰撞后是否把整个 Delta 清 0
+   → 应该是"投影到碰撞平面"，而不是"整体作废"
+
+③ 是否用了 Slide Along Surface 并且法线来自敌人胶囊体
+   → 非竖直法线会把垂直分量一起吃掉
+```
+
+**验证方法（最快的定位顺序）：**
+
+```
+① 临时把敌人 Pawn 碰撞设为 Ignore → 近距离测
+   恢复了 → 确认是敌人碰撞导致
+② 恢复碰撞，临时禁用贴地 / Snap To Floor → 近距离测
+   恢复了 → 确认是贴地逻辑导致
+③ 移动前打印 OriginalDelta / FinalDelta / BlockingHit / Normal
+   近距离那次大概率是 BlockingHit = true 且 FinalDelta ≈ 0
+```
+
+**执行顺序建议：**
+
+```
+先垂直后水平，还是先水平后垂直，取决于动作语义：
+   上挑 / 跃起突进 → 先给垂直冲量，再走水平位移
+                    → 避免贴着敌人时"起不来"
+   纯地面突进       → 水平即可，Up = 0
+```
+
+**⚠️ 不要用 `Launch Character` 绕过 Motor：**
+
+```
+它会绕开 MotionProfile、重力、摩擦与 SetMotionScale
+→ 位移距离不可控，还可能和闪避的 0.3 倍率冲突
+动作位移继续交给 BPC_Motor 管
 ```
 
 ---
@@ -1476,6 +1705,7 @@ flowchart TD
 | 21  | 完美闪避的收尾方式              | 文档写的是「判定成功即立即取消闪避 + 全局时间膨胀」 | 改为「动画继续播，靠时间 / 距离先到收尾 + 只慢敌人」：新增 `EndPerfectDodge`（尾巴判断收进 Attribute）、`SetMotionScale`（位移衰减），接口总数 90 → 92；`bPerfectDodgeUsed` 成为防重复的唯一保证 |
 | 22  | 闪避的默认方向                  | 无输入一律前闪                        | 无输入时按索敌状态决定：`E_LockOnState` 为 `Soft` / `Hard` → 默认右闪，`None` → 默认前闪；有输入时永远以输入为准。不使用距离阈值 |
 | 23  | 完美闪避的残影                  | 文档未涉及                            | 新增 `M_Afterimage` / `BP_Afterimage` / `BPI_Afterimage` + `BPI_Player.StartAfterimage` / `StopAfterimage`，接口总数 92 → 94；`ActiveGhosts` 必须清理，否则只有首次完美闪避能出残影 |
+| 24  | 完美闪避反击                    | 完美闪避后没有限时反击奖励              | 新增反击窗口：窗口内轻 / 重击选择 `Counter_L1` / `Counter_H1` 起始行，后续连招继续走 `ST_AttackData.Next`；窗口过期回归普通攻击，接口不新增 |
 
 ### 需要在编辑器里处理的遗留问题
 
