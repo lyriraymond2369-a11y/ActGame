@@ -77,7 +77,7 @@
 | BPI_Motor                | Code/ActorComponent/Motor          | 9   | BPC_Motor          |
 | BPI_WeaponBase           | Code/Weapon                        | 2   | BP_WeaponBase      |
 | BPI_GameState            | Code/GameState                     | 3   | 待接入                |
-| BPI_Player               | Player                             | 10  | BP_Player          |
+| BPI_Player               | Player                             | 12  | BP_Player          |
 | BPI_ActionState          | Player/Component/ActionState       | 8   | BPC_ActionState    |
 | BPI_BufferInput          | Player/Component/BufferInput       | 3   | BPC_BufferInput    |
 | BPI_CameraDirector       | Player/Component/CameraDirector    | 1   | BPC_CameraDirector |
@@ -87,7 +87,7 @@
 | BPI_AttackTrace          | Enemy/Component/AttackTrace        | 3   | BPC_AttackTrace    |
 | BPI_AI                   | Enemy/Component/AI                 | 12  | BPC_AI             |
 
-合计 92 个接口函数。
+合计 94 个接口函数。
 
 ---
 
@@ -278,6 +278,8 @@
 | IntoHardLockState       | /    | /                       | 进入硬锁                   |
 | OutHardLockState        | /    | /                       | 退出硬锁                   |
 | SetLockPlevisZ          | bool | /                       | 设置是否锁定 Plevis 骨骼的 z 位置 |
+| StartAfterimage         | /    | /                       | 开始按 `GhostInterval` 循环生成残影。**由完美闪避启动** |
+| StopAfterimage          | /    | /                       | 停止生成残影并清空计数数组。**已生成的残影不销毁，交给各自淡出** |
 
 > `GetMesh`、`GetHitBox`、`GetWeapon`、`GetAttributeComponent`、`GetCharacterMovement` **已全部上收到** `BPI_CharacterBase`，玩家侧不再各自声明。写蓝图时统一走基类接口。
 
@@ -1033,14 +1035,18 @@ t = 0.10   被打 → 判定成功
            ├─ 震屏 + 音效
            ├─ 敌人变慢（0.1 倍，持续 0.5 实时秒）
            ├─ Motor.SetMotionScale(0.3)
+           ├─ Player.StartAfterimage()
            └─ 记录当前位置，开启收尾监视
 t = 0.10~0.35   动画继续播，无敌继续，玩家滑得慢，敌人几乎定格
+                每 0.05s 留一个残影，共 5 个
 t = 0.35   收尾（时间到点；或中途位移超 150 提前触发）
            ├─ EndPerfectDodge（按需关无敌 + 尾巴）
            ├─ Montage_Stop(0.12)
            ├─ StopMotion + SetMotionScale(1.0)
            ├─ ClearDodgeCD
+           ├─ Player.StopAfterimage()
            └─ SetState(Locomotion)
+t = 0.35~0.75   5 个残影各自淡出销毁
 t = 0.35~0.60   ★ 玩家已经自由，敌人还在 0.1 倍速里
 t = 0.60   敌人恢复
 ```
@@ -1070,10 +1076,150 @@ PerfectDodgeCancelDelay 0.25  <  SlowMoDuration 0.5
        BPI_CombatFeedBack + PlayPerfectDodgeSlowMo
        BPI_ActionState    + ClearDodgeCD
        BPI_Motor          + SetMotionScale
+       BPI_Player         + StartAfterimage / StopAfterimage
 
 常量   Motor.SetMotionScale 衰减倍率      0.3
        Montage_Stop blend out            0.12
        Dodge_F 行的 MotionSelf 幅值       要能被 0.3 衰减后仍有可读的位移
+```
+
+#### （12）残影：生成、淡出与打断
+
+**判定成功到收尾之间的位移，用"留在原地的静态姿态快照"表达。**
+
+```
+资产    M_Afterimage         Unlit + Additive + Fresnel，参数 Opacity / Color
+        BP_Afterimage        PoseableMeshComponent + Timeline 淡出
+        BPI_Afterimage       CopyPoseFrom(TargetMesh)
+```
+
+**三者的分工：**
+
+```
+BP_Afterimage      只管"一个影子怎么活"——复制姿态、铺材质、淡出、自销毁
+BP_Player          只管"什么时候生、生成几个"——Timer 循环 Spawn
+BPC_Combat         只管"什么时候开始/停止"——调接口，不碰生成细节
+```
+
+**为什么用 PoseableMesh 而不是 Niagara 或 Ribbon：**
+
+```
+Ribbon / Trail 只有"轨迹"，没有姿态 → 看起来像风，不像人
+PoseableMesh + Copy Pose From Skeletal Component → 真·姿态快照
+成本：每个残影一次 draw call + 一份骨骼矩阵，5 个完全无压力
+```
+
+**⭐ 三个必须守住的点：**
+
+```
+① PoseableMesh 必须预先指定「骨骼网格体资源」
+   CopyPose 只复制骨骼变换，不复制网格资源
+   不填的话姿态复制成功但画面全空，极易误判成"复制失败"
+
+② 材质槽必须遍历，不能只设 index 0
+   角色通常 3~5 个槽（身体/衣服/头发/眼睛）
+   只设 0 会出现"身体是残影、衣服是原材质"的错位
+
+③ 绝不 Attach 到玩家
+   残影固定在生成瞬间的位置，跟随就失去了"残影"的意义
+```
+
+**`BP_Afterimage` 的淡出链路：**
+
+```
+BeginPlay
+  → Create Dynamic Material Instance(M_Afterimage)  → MID
+  → For Each Loop(0 .. GetNumMaterials()-1)
+        → Set Material(Index, MID)
+  → Timeline(0 → 1, FadeTime) → Play
+
+Timeline · Update  → Set Scalar Parameter Value(MID, "Opacity", 1 − Alpha)
+Timeline · Finished → DestroyActor
+```
+
+**⚠️ 必须用 MID（动态材质实例）。直接用母材质的话，改参数会改到所有残影上 —— 结果是 5 个影子同时消失，而不是各自淡出。**
+
+**⚠️ UE 里有**两个**同名节点「Set Scalar Parameter Value」：**
+
+```
+一个 Target 是 Material Instance Dynamic  → 改材质参数
+一个 Target 是 Audio Component           → 改 MetaSound 参数
+
+从内容浏览器拖节点时很容易选错
+选错的表现：Get 读回来永远是母材质的默认值，且没有任何报错
+→ 排查方法：把材质里该参数的默认值改成一个特殊数字，
+            看 Get 是否跟着变；不变就是写到了别的对象上
+```
+
+**`BP_Player` 的生成侧：**
+
+```
+变量   AfterimageClass : BP_Afterimage 类引用
+       GhostInterval  : 0.05
+       MaxGhosts      : 5
+       GhostTimerHandle / ActiveGhosts(数组)
+
+StartAfterimage  → 清 Timer → Set Timer(GhostInterval → SpawnGhost, Looping)
+SpawnGhost       → 剪枝 → Num >= MaxGhosts? Return → Spawn + CopyPoseFrom + Add
+StopAfterimage   → 清 Timer → ActiveGhosts.Clear()
+```
+
+**⭐ `ActiveGhosts` 必须清理，这是本节最大的坑：**
+
+```
+残影淡出后自销毁，但数组里的引用不会自动移除
+→ Num() 持续虚高
+→ 第 2 次完美闪避时 Num(5) >= MaxGhosts(5) → 一个都不生成
+→ 表现：只有第一次完美闪避有残影，之后永远没有，且不报任何错
+```
+
+**两种清理方式，建议都做：**
+
+```
+StopAfterimage 时 Clear()                  ← 必需，每轮重新计数
+Start/Spawn 时按 IsValid 剪枝               ← 可选，给"高频连闪"兜底
+```
+
+**⚠️ `StopAfterimage` 里**不要** `DestroyActor` 已生成的残影 —— 它们有自己的淡出 Timeline，强行销毁会从"渐隐"变成"啪一下消失"。**
+
+**接线（三个点，缺一不可）：**
+
+```
+HandlePerfectDodge      → Player.StartAfterimage()
+TryFinishPerfectDodge   → Player.StopAfterimage()    放在 SetState 之前
+InterruptPerfectDodge   → Player.StopAfterimage()
+```
+
+**⚠️ `InterruptPerfectDodge` 那条最容易漏。慢动作期间受击时不停止生成，Timer 会继续跑到超过 `MaxGhosts`，表现就是"挨打了还在冒影子"。**
+
+**时间对齐：**
+
+```
+t = 0.10   判定成功 → StartAfterimage
+t = 0.10~0.35   每 0.05s 一个，共 5 个
+t = 0.35   收尾 → StopAfterimage（只停生成，已有残影继续淡出）
+t = 0.35~0.75   5 个残影各自淡出销毁
+```
+
+**距离上限（150）提前触发收尾时只会有 2~3 个残影 —— 这是合理的：位移短本来就不需要那么多。**
+
+| 参数 | 默认 | 调法 |
+| --- | --- | --- |
+| `GhostInterval` | 0.05 | 太糊 → 0.07；太稀 → 0.04 |
+| `MaxGhosts` | 5 | 最多到 7，超过 8 开始掉帧 |
+| `FadeTime` | 0.4 | 想拖更久 → 0.7 |
+| Color | (0.3, 0.75, 1.0) | 冷色调与"时间变慢"呼应 |
+| Fresnel 指数 | 3~5 | 越大边缘越细，6 已经偏虚 |
+
+**⚠️ 材质里的参数名必须与蓝图完全一致（`Opacity` / `Color`，大小写敏感）。写错不报错，只表现为"残影不淡出"或"颜色不对"。**
+
+**接线后最容易出现的四个现象与原因：**
+
+```
+残影跟着人跑             → Spawn 时 Attach 到了角色
+残影永远是 T-Pose        → CopyPoseFrom 没调，或晚了一帧
+第一次正常、之后再也不出   → ActiveGhosts 没清理，Num() 虚高
+只亮身体、衣服是原材质     → 材质槽只设了 index 0
 ```
 
 ---
@@ -1329,6 +1475,7 @@ flowchart TD
 | 20  | BPI_Player 相机相关            | 只有 `GetDirectorComponent`          | 已改名为 `GetCameraDirectorComponent`；并新增 `GetCameraComponent`（返回 UE 的 `CameraComponent`，与 `BPC_CameraDirector` 不是一回事，两者可同时存在） |
 | 21  | 完美闪避的收尾方式              | 文档写的是「判定成功即立即取消闪避 + 全局时间膨胀」 | 改为「动画继续播，靠时间 / 距离先到收尾 + 只慢敌人」：新增 `EndPerfectDodge`（尾巴判断收进 Attribute）、`SetMotionScale`（位移衰减），接口总数 90 → 92；`bPerfectDodgeUsed` 成为防重复的唯一保证 |
 | 22  | 闪避的默认方向                  | 无输入一律前闪                        | 无输入时按索敌状态决定：`E_LockOnState` 为 `Soft` / `Hard` → 默认右闪，`None` → 默认前闪；有输入时永远以输入为准。不使用距离阈值 |
+| 23  | 完美闪避的残影                  | 文档未涉及                            | 新增 `M_Afterimage` / `BP_Afterimage` / `BPI_Afterimage` + `BPI_Player.StartAfterimage` / `StopAfterimage`，接口总数 92 → 94；`ActiveGhosts` 必须清理，否则只有首次完美闪避能出残影 |
 
 ### 需要在编辑器里处理的遗留问题
 
