@@ -53,6 +53,7 @@
     - [2）完美闪避与无敌帧](#2完美闪避与无敌帧) —— 无敌区间 / 完美窗口 / 奖励链
     - [3）闪避方向（四向）](#3闪避方向四向) —— 方向判定、参考系对齐、四行数据
     - [4）动作位移：水平与垂直冲量必须分开处理](#4动作位移水平与垂直冲量必须分开处理) —— 近身撞人时上挑被吞的原因
+    - [5）刀光：Niagara 条带拖尾](#5刀光niagara-条带拖尾) —— 为什么不用静态弧面、条带的三条硬设置
 - [9，运行导图](#9运行导图) —— 组件之间的实际流转
     - [1）玩家运行导图](#1玩家运行导图) —— 输入到伤害
     - [2）敌人运行导图](#2敌人运行导图) —— 感知到伤害
@@ -76,7 +77,7 @@
 | BPI_Attribute            | Code/ActorComponent/Attribute      | 14  | BPC_Attribute      |
 | BPI_CombatFeedBack       | Code/ActorComponent/CombatFeedBack | 4   | BPC_CombatFeedBack |
 | BPI_Motor                | Code/ActorComponent/Motor          | 9   | BPC_Motor          |
-| BPI_WeaponBase           | Code/Weapon                        | 2   | BP_WeaponBase      |
+| BPI_WeaponBase           | Code/Weapon                        | 3   | BP_WeaponBase      |
 | BPI_GameState            | Code/GameState                     | 3   | 待接入                |
 | BPI_Player               | Player                             | 12  | BP_Player          |
 | BPI_ActionState          | Player/Component/ActionState       | 8   | BPC_ActionState    |
@@ -88,7 +89,7 @@
 | BPI_AttackTrace          | Enemy/Component/AttackTrace        | 3   | BPC_AttackTrace    |
 | BPI_AI                   | Enemy/Component/AI                 | 12  | BPC_AI             |
 
-合计 94 个接口函数。
+合计 95 个接口函数。
 
 ---
 
@@ -493,6 +494,7 @@ SetState         不用判断   —— 复位收尾
 | --------------- | --- | ----- | -------------- |
 | GetWeaponBonus  | /   | float | 获取武器的攻击力加成     |
 | GetWeaponHitBox | /   | 盒体碰撞  | 获取武器碰撞箱        |
+| SetTrailActive  | bool | /     | 开关武器拖尾，`true` 激活 / `false` 停用（停用不销毁已生成粒子） |
 
 ---
 
@@ -544,6 +546,7 @@ SetState         不用判断   —— 复位收尾
 | `ANS_AttackWindow` | NotifyState | `BPI_Combat.OnAttackWindow(bool)`      | 开合攻击判定窗口，驱动 AttackTrace 的命中检测             |
 | `ANS_Move`         | NotifyState | `BPI_Motor.StartMotion` / `StopMotion` | 开合代码位移窗口                                  |
 | `ANS_LandCheck`    | NotifyState | 自有逻辑（不经过 Combat）                       | 落地检测                                      |
+| `ANS_WeaponTrail`  | NotifyState | `BPI_WeaponBase.SetTrailActive(bool)`  | 开合武器拖尾（Niagara 条带）的生成区间 |
 | `AN_Cancel`        | Notify      | 目前**未接** `SetCancelWindow`             | 取消窗口时机改由 `ST_AttackData.CancelStart` 数据驱动 |
 
 **三个要点：**
@@ -559,6 +562,10 @@ SetState         不用判断   —— 复位收尾
 ③ AN_Cancel 目前是空壳
    取消窗口由 Combat 按 CancelStart 自己开合
    要么删掉这个通知，要么改成让它调 SetCancelWindow —— 别两边都做
+
+④ ANS_WeaponTrail 是唯一操作「武器」的通知
+   武器通过 BPI_CharacterBase.Get Weapon 拿到，不 Cast 具体武器蓝图
+   → 换刀、双持都不用改通知
 ```
 
 ---
@@ -1560,6 +1567,100 @@ E_HitDirection  受击专用，后续会扩到前左 / 前右等 8 方向
 
 ---
 
+### 5）刀光：Niagara 条带拖尾
+
+**武器的挥砍轨迹用 Niagara 的 Ribbon Renderer 生成，不用静态弧面网格。**
+
+```
+资产   Code/Material/M_WeaponTrail         Unlit + Additive + 贴图遮罩
+       Code/VFX/Slash/NS_WeaponTrail       条带系统
+       Code/Weapon/BP_Player_Sword         挂 NiagaraComponent 到刀尖 socket
+       Code/AnimNotify/ANS_WeaponTrail     开合区间
+```
+
+**为什么不用静态弧面（这条路走过，结论是不划算）：**
+
+```
+SM_SlashArc 这类网格是美术在自己的坐标系里做的
+   弧面躺哪个平面、pivot 在哪、单位尺度多少 —— 都与 socket 无关
+直接套 socket 变换 = 两套无关坐标系相乘 → 朝向和大小都不对
+
+要修就得给每个攻击方向单独加 Offset Rotation / Mirror
+四向闪避 + 轻重击 + 反击 → 对齐工作量极大，而且一改动画全废
+
+条带完全不碰这个问题：
+   方向由轨迹自动生成（socket 走过的路径就是方向）
+   长度由挥动幅度决定
+   粗细只有一个 Ribbon Width 参数
+```
+
+**三个必须守住的设置：**
+
+```
+① 发射器 Local Space = false
+   开着的话粒子存的是「相对发射器」的坐标
+   武器一动粒子跟着动 → 所有粒子叠在同一点 → 条带长度为 0，什么都画不出来
+
+② Ribbon Width > 0，且不要用 Scale Ribbon Width 模块把曲线从 0 起
+   宽度被乘成 0 时，渲染器正常工作但画面全空，零报错
+
+③ SetTrailActive(false) 用 Deactivate，不要用 Destroy
+   Deactivate → 停止生成，已有粒子活完 lifetime 自然淡出（刀光该有的收尾）
+   Destroy    → 立刻全消，看起来像被硬切断
+```
+
+**Ribbon 的朝向由「模式 + 粒子属性」共同决定，不是在渲染器里填一个向量：**
+
+```
+Ribbon Renderer · Facing Mode
+    Screen（相机朝向）        → 永不扭面，但没有平面感，适合先验证
+    Custom / Custom Side Vector → 需要粒子属性 RibbonFacing（Vector）
+                                  在「粒子更新」栈里写入，可由 User Parameter 从蓝图传
+```
+
+**⭐ 排查顺序建议：先用 Screen 确认轨迹本身对（长度、渐隐、跟随），再切 Custom 追求平面感。方向不对时优先怀疑 Facing Mode，不要去改武器挂载。**
+
+**材质分工（`M_WeaponTrail`）：**
+
+```
+粒子颜色 RGB  → 刀光颜色          （Niagara 控制）
+粒子颜色 A    → 整条刀光淡出      （Niagara 按年龄衰减）
+贴图 RGB/遮罩 → 刀光形状与沿条带的渐隐
+```
+
+**⚠️ Additive 本身就是"越叠越亮"：条带自交或贴近相机时会爆白。控制手段有两个 ——**
+**降低材质的自发光乘数（Additive 下乘 2 以上必然过曝），或改用 Translucent 让重叠变成覆盖而非相加。**
+
+**接线（走接口，不 Cast 具体武器）：**
+
+```
+ANS_WeaponTrail · NotifyBegin
+    → BPI_CharacterBase.Get Weapon(Owner)
+    → BPI_WeaponBase.SetTrailActive(true)
+
+ANS_WeaponTrail · NotifyEnd
+    → BPI_WeaponBase.SetTrailActive(false)
+```
+
+**⚠️ 动画被 `Montage_Stop` 或受击打断时，NotifyEnd 可能不触发，刀光会一直挂着。**
+**兜底放在 `BPC_Combat` 的收尾路径里（和 `StopAfterimage()` 同一处）主动调一次 `SetTrailActive(false)`。**
+
+**挂载与区间：**
+
+```
+NiagaraComponent 附在武器 Mesh 的「刀尖」socket 上
+    刀根 socket 位移太小 → 轨迹短到看不出来
+    Auto Activate 关，由通知控制
+
+每段攻击各挂一个 ANS_WeaponTrail，不要用一条长通知覆盖整段连招
+    → 否则两段之间的过渡动作也会被采样，连出一条直线光带
+
+区间宽度不必精确到帧：
+    比静态弧面宽容得多 —— 宽一点轨迹长，窄一点轨迹短，不会「提前亮 / 追不上」
+```
+
+---
+
 ## 9，运行导图
 
 > 组件之间的实际流转。图上只画调用关系，判断规则看 [8，功能实现](#8功能实现)。
@@ -1706,6 +1807,7 @@ flowchart TD
 | 22  | 闪避的默认方向                  | 无输入一律前闪                        | 无输入时按索敌状态决定：`E_LockOnState` 为 `Soft` / `Hard` → 默认右闪，`None` → 默认前闪；有输入时永远以输入为准。不使用距离阈值 |
 | 23  | 完美闪避的残影                  | 文档未涉及                            | 新增 `M_Afterimage` / `BP_Afterimage` / `BPI_Afterimage` + `BPI_Player.StartAfterimage` / `StopAfterimage`，接口总数 92 → 94；`ActiveGhosts` 必须清理，否则只有首次完美闪避能出残影 |
 | 24  | 完美闪避反击                    | 完美闪避后没有限时反击奖励              | 新增反击窗口：窗口内轻 / 重击选择 `Counter_L1` / `Counter_H1` 起始行，后续连招继续走 `ST_AttackData.Next`；窗口过期回归普通攻击，接口不新增 |
+| 25  | 武器刀光                        | 攻击蒙太奇没有统一的刀光开关              | 新增 `M_WeaponTrail` / `NS_WeaponTrail` / `ANS_WeaponTrail`；通过 `BPI_WeaponBase.SetTrailActive(bool)` 控制 Niagara Ribbon，接口总数 94 → 95 |
 
 ### 需要在编辑器里处理的遗留问题
 
