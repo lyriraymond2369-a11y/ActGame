@@ -74,8 +74,8 @@
 
 | 接口                       | 目录                                 | 函数数 | 对应实现               |
 | ------------------------ | ---------------------------------- | --- | ------------------ |
-| BPI_CharacterBase        | Code/Interface                     | 9   | 无（纯接口，所有组件获取的统一入口） |
-| BPI_Attribute            | Code/ActorComponent/Attribute      | 14  | BPC_Attribute      |
+| BPI_CharacterBase        | Code/Interface                     | 10  | 无（纯接口，所有组件获取的统一入口） |
+| BPI_Attribute            | Code/ActorComponent/Attribute      | 15  | BPC_Attribute      |
 | BPI_CombatFeedBack       | Code/ActorComponent/CombatFeedBack | 4   | BPC_CombatFeedBack |
 | BPI_Motor                | Code/ActorComponent/Motor          | 9   | BPC_Motor          |
 | BPI_WeaponBase           | Code/Weapon                        | 3   | BP_WeaponBase      |
@@ -88,9 +88,9 @@
 | BPI_LockOn               | Player/Component/LockOn            | 6   | BPC_LockOn         |
 | BPI_EnemyBase            | Enemy                              | 2   | BP_EnemyBase       |
 | BPI_AttackTrace          | Enemy/Component/AttackTrace        | 3   | BPC_AttackTrace    |
-| BPI_AI                   | Enemy/Component/AI                 | 12  | BPC_AI             |
+| BPI_AI                   | Enemy/Component/AI                 | 9   | BPC_AI             |
 
-合计 96 个接口函数。
+合计 95 个接口函数。
 
 ---
 
@@ -117,6 +117,7 @@
 | GetWeapon                  | /                            | BP_WeaponBase 对象引用         | 获取角色当前武器                 |
 | ApplyImpulse               | Vector3，XYOverride，ZOverride | /                          | 按状态计算当前应施加的冲量            |
 | IsCharacterDead            | /                            | bool                       | 角色是否死亡。**不依赖 Attribute 组件，供 GameState 等全局层判断** |
+| IsHostile                  | Actor（Other）                 | bool                       | 判断 Other 是否为敌对。**对方未实现本接口 / 同队 → false**。在 `BP_Player` 与 `BP_EnemyBase` 各实现一份 |
 
 > **这里是全部「取组件 / 取引用」的唯一入口。**
 > `BPI_Player` 与 `BPI_EnemyBase` 不再重复声明 `GetMesh` / `GetHitBox` / `GetWeapon` / `GetAttributeComponent`，写蓝图时统一从基类接口取。
@@ -128,6 +129,7 @@
 | GetAttack        | /                                    | float（Attack）          | 获取角色的攻击值（包括武器基础加成）                              |
 | GetDefense       | /                                    | float（Defenses，0~1）    | 获取角色减伤                                          |
 | GetPoiseAttack   | /                                    | float（PoiseAttack）     | 获取角色的削轫值（包括武器基础加成）                              |
+| GetTeam          | /                                    | E_Team                  | 获取阵营。`Neutral` / `Player` / `Enemy`，用于敌我判定         |
 | AddBonus         | float（AttackDelta）                   | /                      | 添加武器加成                                          |
 | IsDead           | /                                    | bool（Dead）             | 角色是否死亡                                          |
 | TakeDamage       | float（BaseDamage），float（PoiseDamage） | bool（bIsBroken）        | 扣血扣韧，返回是否破韧。**内部不再乘防御**                         |
@@ -450,18 +452,23 @@ SetState         不用判断   —— 复位收尾
 
 | 方法名                     | 输入                             | 输出        | 作用                        |
 | ----------------------- | ------------------------------ | --------- | ------------------------- |
-| AI_AddPerceivedActor    | Actor                          | /         | 添加感受到的对象                  |
-| AI_RemovePerceivedActor | Actor                          | /         | 从感受列表中删除对象                |
 | AI_GetCurrentTarget     | /                              | Actor     | 获取当前锁定的对象                 |
-| AI_RefreshTarget        | /                              | /         | 重算并写入黑板 TargetActor       |
 | AI_GetAIState           | /                              | E_AIState | 获取当前 AI 状态                |
-| AI_SetAIState           | E_AIState（NewState）            | bool      | 带优先级闸门的状态转换，返回目标状态是否达成    |
-| AI_ResetAIState         | E_AIState（NewState）            | bool      | 强制转场（绕过优先级），死亡状态不可转出      |
+| AI_SetState             | E_AIState（NewState）            | /         | 普通状态写入，内部转 `ApplyState`。**决策层确认后调用** |
+| AI_TryEnterState        | E_AIState（NewState）            | bool      | 带优先级闸门的状态进入，返回是否进入。**受击 / 死亡走这个** |
+| AI_ReturnToInitialState | /                              | /         | 动作结束后回流：有目标 → `Chase`，无目标 → `Idle` |
+| AI_IsAlive              | /                              | bool      | 角色当前是否活着                  |
+| AI_HandleSight          | Actor，bool（bSensed）           | /         | 处理视觉感知的进入/丢失。**只维护感知池，不改状态** |
 | AI_GetHitStamp          | /                              | int       | 取当前受击戳，供表现层读取             |
 | AI_ConsumeHit           | int（Stamp）                    | bool      | 表现层回写已消费的戳，返回是否已全部消费完     |
-| AI_IsAlive              | /                              | bool      | 角色当前是否活着                  |
-| AI_HandleSight          | Actor，bool（bSensed）           | /         | 处理视觉感知的进入/丢失              |
-| HandleDamageApplied     | E_HitOutCome，E_HitDirection，bool | /         | 受击后由 Attribute 的 OnDamageApplied 回调 |
+
+> **`AI_SetState` 是内部 `ApplyState` 的薄包装** —— 真正写状态的是 `ApplyState`（写 `CurrentState`、同步 `Blackboard.AIState`、处理受击幂等、执行状态副作用）。
+>
+> **`AI_SetState` 绕过优先级** —— 何时可调由调用方负责。受击、死亡一律走 `AI_TryEnterState`。
+>
+> **已移除的旧接口**：`AI_AddPerceivedActor` / `AI_RemovePerceivedActor` / `AI_RefreshTarget` / `HandleDamageApplied` 转为内部方法；`AI_ResetAIState` 已删除（无引用）；旧名 `AI_SetAIState` 已改为 `AI_SetState`。
+>
+> ⚠️ 二进制里仍能搜到 `AI_SetAIState` 等旧名，是 Name Table 残留，以编辑器「我的蓝图 → 函数」面板为准（见遗留问题 ⑦）。
 
 ### 2）EnemyBase 数据类型
 
@@ -479,10 +486,138 @@ SetState         不用判断   —— 复位收尾
 | KnockDown | 倒地（受控）  |
 | Dead      | 死亡（受控）  |
 
+**优先级与受控标记（与 [8，功能实现 · 1）敌人受击状态机](#1敌人受击状态机) 的 `AIStateProperty` 同源）：**
+
+```
+4  Dead        受控，终态
+3  KnockDown   受控
+2  HitHeavy    受控
+1  HitLight    受控
+0  Idle / Chase / Attack   非受控，优先级一律为 0
+```
+
+> `AI_TryEnterState` 按这张表判断能否进入；`AI_SetState` 绕过优先级（调用方负责时机）。
+>
+> **⭐ `Attack` 不会被 `Chase` 覆盖，靠的不是优先级** —— 而是 `BTS_UpdateAIState` 在 Attack 期间直接 Return（见下节）。非受控状态优先级都是 0，本来就拦不住彼此。
+
+##### 二，E_Team
+
+| 枚举值       | 枚举含义          |
+| --------- | ------------- |
+| Neutral   | 中立 / 无阵营（环境物件） |
+| Player    | 玩家            |
+| Enemy     | 敌人（含训练木桩）     |
+
+> **新值一律追加在末尾，不要插入中间** —— 插在中间会让已保存资产按旧索引解析。
+>
+> 敌我判定统一走 `BPI_CharacterBase.IsHostile`，规则：**对方未实现接口 / 同队 → `false`；不同阵营 → `true`**。`Neutral` 不做例外，所以「忘记配 Team」的失败表现是「打不到它」而不是「互相误伤」。
+
 ---
 
 > 敌人运行导图 → [9，运行导图 · 2）敌人运行导图](#2敌人运行导图)
 > 受击状态机 → [8，功能实现 · 1）敌人受击状态机](#1敌人受击状态机)
+
+---
+
+### 3）AI 分层与职责约定
+
+**层序（越靠上权限越大，只允许上层往下写）：**
+
+```
+BPC_AttackTrace     执行攻击 / 结束攻击 / 归还令牌 / 通知动作结束
+        ↓
+BT · BTS / BTD / BTT   BTS 决策，BTD 只读，BTT 只执行
+        ↓
+BPC_AI              状态存储 + 优先级仲裁 + 感知 / 目标 / 距离数据
+        ↓
+Blackboard          共享数据，所有组件都能读
+```
+
+**⭐ 核心：`BPC_AI` 不决策，只仲裁 —— 形态与 `BPC_ActionState` 一致。**
+
+#### 黑板读写权限
+
+| 模块 | 读 | 写 | 改 AI 状态 |
+| --- | --- | --- | --- |
+| `BPC_AI` | ✅ | ✅ 维护自己的数据（`TargetActor` / `DisToTarget` / `AIState`） | 提供接口 |
+| `BTS` | ✅ | ✅ 决策数据 | 调 `AI_SetState` |
+| `BTD` | ✅ | ❌ | ❌ |
+| `BTT` | ✅ | ❌ | ❌ |
+| `BPC_AttackTrace` | ✅ | ❌ | 只通过接口通知 |
+
+**⚠️ `Blackboard.AIState` 只能由 `ApplyState` 内部同步，任何人都不得直接写 —— 否则 `CurrentState` 和黑板会分叉，且极难发现。**
+
+#### 状态接口分工
+
+| 触发源 | 场景 | 用哪个 |
+| --- | --- | --- |
+| `BTS` | `Idle → Chase`、`Chase → Idle`、`Chase → Attack` | `AI_SetState`（绕过优先级，时机由 BTS 保证） |
+| `BPC_Attribute` | 任何 → `HitLight` / `HitHeavy` / `KnockDown` | `AI_TryEnterState` |
+| `BPC_Attribute` | 任何 → `Dead` | `AI_TryEnterState`（`Dead` 也必须走优先级判定） |
+| `BPC_AttackTrace` | 动作结束回流 | `AI_ReturnToInitialState` |
+
+**规律：计划内的正常转换走 `AI_SetState`；外部突发事件走 `AI_TryEnterState`。**
+
+#### `BPC_AI` 的 Tick 只做三件事
+
+```
+Tick
+├─【1】UpdatePerception()   剔除失效 / 死亡 / 非敌对 / 自己
+├─【2】RefreshTarget()      粘性选目标 → 同步 BB.TargetActor
+└─【3】UpdateDistances()    算 2D 距离 → 同步 BB.DisToTarget
+```
+
+**三条实现要点：**
+
+```
+① UpdatePerception 先收集 BadActors 再统一 Remove（不在遍历中删）
+② RefreshTarget 是「粘性」的：当前目标仍有效就不换，否则两个近距离目标会让敌人每帧抖动
+③ 黑板只在值真的变化时才写（尤其 TargetActor），否则装饰器每帧被无谓触发
+```
+
+**⚠️ `UpdatePerception` 不做距离剔除** —— 视野范围由感知系统负责，两处都判会导致每帧反复增删。距离判断属于 `RefreshTarget` 的「选谁」，不属于「谁还在」。
+
+**⚠️ 不要给 `BB.DisToTarget` 加黑板观察者** —— 它每帧都变。需要距离条件时用布尔键（如 `bInAttackRange`），只在跨阈值时写。
+
+#### `BTS_UpdateAIState` 决策流程
+
+**资产：`Enemy/AI/Service/BTS_UpdateAIState`，挂在 `BT_EnemyBase` 的 Root 上，每帧执行。**
+
+```
+① 当前是受控状态（HitLight / HitHeavy / KnockDown / Dead）→ 直接 Return
+② 当前是 Attack → 直接 Return                  ← 攻击期间完全不决策
+③ TargetActor 无效 → 仅当当前是 Chase 才回初始态
+④ 距离 > AttackRange → 需要时转 Chase
+⑤ 距离够 + 冷却完成 + 令牌到手 → AI_SetState(Attack)
+```
+
+**⭐ ② 是修掉「攻击中丢失目标导致状态错乱」的关键：攻击期间 BTS 闭嘴，等 `BPC_AttackTrace` 结束回流。**
+
+**⭐ ③ 的「仅当当前是 Chase」不能放宽成「任何状态 + 无目标 → Idle」—— 那会打断攻击、受击、倒地。**
+
+**⚠️ BTS 是**唯一**做普通状态决策的地方。它只调 `AI_SetState`，不写 `Blackboard.AIState`，也不执行任何行为。**
+
+#### 攻击时序
+
+```
+BTS 拿到令牌 → AI_SetState(Attack)
+    → BTD 选中 Attack 分支 → BTT_EnemyAttack 调 AttackTrace.AttackByType
+    → 攻击期间玩家离开视野：TargetActor 被清，但 BTS 在 Attack 直接 Return，攻击照常播完
+    → 蒙太奇结束：AttackTrace 先 RemoveToken，再 AI_ReturnToInitialState
+        → 有目标 → Chase，无目标 → Idle
+```
+
+**⚠️ 顺序必须是「先还令牌，再回初始状态」。反过来的话，回到 Chase 后 BTS 可能立刻判定可再次攻击，但旧令牌还没释放，状态与资源不同步。**
+
+#### 令牌归属
+
+```
+申请   BTS（进入 Attack 之前）—— 申请失败就停在 Chase，不进入 Attack
+归还   BPC_AttackTrace（回合结束时）
+兜底   BP_GameState · Tick（无效引用 / IsCharacterDead / 持有超时）
+```
+
+**⚠️ 不要让 BTT 申请令牌** —— 若 AI 状态已进 `Attack` 而令牌申请失败，BTT 回退但没人结束攻击，会把 AI 卡在 `Attack`。
 
 ---
 
@@ -580,7 +715,10 @@ SetState         不用判断   —— 复位收尾
 ### 1）敌人受击状态机
 
 敌人没有 `BPC_ActionState`，受击状态由 `BPC_AI` 自己维护。
-**所有转换规则收在 `AI_SetAIState` 一个入口里，行为树只读状态、不做判断。**
+**所有转换规则收在 `AI_TryEnterState` / `AI_SetState` 两个入口里，行为树只读状态、不做判断。**
+
+> **两个入口的分工：**
+> `AI_TryEnterState` 走优先级闸门，受击 / 死亡走这里；`AI_SetState` 是内部 `ApplyState` 的薄包装，绕过优先级，供决策层（BTS）和动作回流（`AI_ReturnToInitialState`）使用。
 
 #### （1）状态分级
 
@@ -606,12 +744,13 @@ SetState         不用判断   —— 复位收尾
 ② Dead 是唯一禁止幂等的状态
    Dead → Dead 返回 false；其余同级转换返回 true。
 
-③ AI_ResetAIState 是受控状态的唯一出口
-   它能绕过优先级闸门，只允许受击表现播完后调用。
-   别的地方想改状态一律走 AI_SetAIState。
+③ 受控状态的唯一出口是 AI_ReturnToInitialState
+   它不判优先级，只回答「动作结束了，该回哪儿」：有目标 → Chase，无目标 → Idle。
+   受击表现播完、攻击蒙太奇结束都走它。
+   别的地方想改状态一律走 AI_SetState（绕过优先级）或 AI_TryEnterState（走闸门）。
 ```
 
-#### （3）AI_SetAIState —— 只升不降
+#### （3）AI_TryEnterState —— 优先级闸门
 
 ```
 [1] NewState == Dead ?
@@ -644,19 +783,37 @@ SetState         不用判断   —— 复位收尾
 | Dead      | Dead      | 1  | **false** |
 | Dead      | HitLight  | 3  | false     |
 
-#### （4）AI_ResetAIState —— 强制转场
+**⚠️ `ApplyState` 才是真正写状态的地方**（写 `CurrentState`、同步黑板 `AIState`、处理受击幂等、执行状态副作用）。两个入口都只是它的包装，不要在包装里重复这些逻辑。
+
+#### （4）AI_SetState / AI_ReturnToInitialState —— 绕过优先级的两个出口
+
+**`AI_SetState`** 是 `ApplyState` 的薄包装，**不判优先级**：
 
 ```
-[1] CurrentState == Dead ?
-      return false                               （死亡不可转出）
-
-[2] NewState == CurrentState ?
-      return true                                （幂等短路，省一次黑板写）
-
-[3] ApplyState(NewState); return true
+AI_SetState(NewState)
+  └─ ApplyState(NewState)
 ```
 
-它**不判优先级** —— 受控状态永远过不了 `AI_SetAIState` 的闸门，回不到普通状态，只能从这里出去。
+**谁可以调、为什么安全：**
+
+| 调用方 | 场景 | 它凭什么保证时机 |
+| --- | --- | --- |
+| `BTS_UpdateAIState` | `Idle → Chase`、`Chase → Idle`、`Chase → Attack` | BTS 在受控状态和 Attack 期间直接 Return，不会在这些时候调 |
+| `BPC_AttackTrace` | 攻击蒙太奇结束回流 | 只在攻击结束时调一次 |
+
+**⭐ 绕过优先级不等于不安全 —— 安全性由**调用方的前置判断**保证。这是「权限下放」的必然代价：谁能写，谁就要负责时机。**
+
+**`AI_ReturnToInitialState`** 是动作结束的统一回流：
+
+```
+[1] 当前状态不是 Attack / 受控状态 → return     （幂等，别的地方误调也无害）
+[2] TargetActor 有效 → SetState(Chase)
+[3] TargetActor 无效 → SetState(Idle)
+```
+
+**⭐ 为什么由它判断“回 Chase 还是 Idle”：`AttackTrace` 不该知道有没有目标 —— 那是 AI 的数据。它只负责说「我这边结束了」，去向由 AI 用自己的数据决定。**
+
+**⚠️ 调用顺序必须是「先 `RemoveToken`，再 `AI_ReturnToInitialState`」**：反过来的话，回到 Chase 的那一帧 BTS 可能判定可再次攻击，但旧令牌还没释放，状态与资源不同步。
 
 #### （5）重播机制：状态幂等 ≠ 表现幂等
 
@@ -694,13 +851,13 @@ AI_ConsumeHit        → HandledStamp = max(本次 Stamp)，再刷黑板
 
 | 键            | 类型              | 写入方                 | 说明                       |
 | ------------ | --------------- | ------------------- | ------------------------ |
-| AIState      | E_AIState       | ApplyState          | 状态机同步                    |
+| AIState      | E_AIState       | ApplyState          | 状态机同步（**唯一写入点**）         |
 | bHitPending  | bool            | SyncBlackboard      | 是否有未消费的受击                |
-| HitDirection | E_HitDirection  | HandleDamageApplied | 本次受击方向，只与 HitStamp 同步更新   |
-| TargetActor  | Actor           | AI_RefreshTarget    | 当前目标                     |
-| DisToTarget  | float           | AI 服务              | 与目标距离                    |
+| HitDirection | E_HitDirection  | 内部受击处理（原 HandleDamageApplied） | 本次受击方向，只与 HitStamp 同步更新   |
+| TargetActor  | Actor           | Tick · RefreshTarget | 当前目标（**值变化时才写**）         |
+| DisToTarget  | float           | Tick · UpdateDistances | 与目标的 2D 距离（无目标时为 -1）     |
 
-**行为树的 Task 和 Decorator 一律只读黑板，不直接写；所有写入都经过 `BPC_AI`。**
+**行为树的 `BTT` 与 `BTD` 一律只读黑板，不写任何值；只有 `BTS` 和 `BPC_AI` 自己会写。**
 
 #### （7）受击蒙太奇表
 
@@ -1824,20 +1981,28 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    Sight([视觉感知]) -->|"AI_HandleSight → AI_AddPerceivedActor"| AI["BPC_AI<br/>感知列表 / 当前目标 / AI 状态"]
-    SelfAttr["自身 BPC_Attribute<br/>受击判定"] -->|"OnDamageApplied<br/>HitOutCome + HitDirection"| AI
+    Sight([视觉感知]) -->|"AI_HandleSight<br/>只维护感知池"| AI["BPC_AI<br/>感知 / 目标 / 距离<br/>+ 状态仲裁"]
+    SelfAttr["自身 BPC_Attribute<br/>受击判定"] -->|"AI_TryEnterState<br/>HitLight / HitHeavy / KnockDown / Dead"| AI
 
-    AI -->|"AI_RefreshTarget 写 TargetActor"| BB[("黑板<br/>AIState / TargetActor<br/>HitDirection / bHitPending")]
-    AI -->|"AI_SetAIState 写 AIState"| BB
+    AI -->|"Tick：UpdatePerception<br/>RefreshTarget / UpdateDistances"| BB[("黑板<br/>TargetActor / DisToTarget<br/>AIState / HitPending / bControlled")]
 
-    BB -.->|只读| BT["BT_EnemyBase<br/>行为树"]
-    AIC["AIC_EnemyBase<br/>AIController"] -->|RunBehaviorTree| BT
+    BB -.->|只读| BTD["BTD 装饰器<br/>按 AIState 选分支"]
+    AIC["AIC_EnemyBase<br/>AIController"] -->|RunBehaviorTree| BT["BT_EnemyBase"]
 
-    BT -->|"BTT_EnemyAttack → AttackByType"| Trace["BPC_AttackTrace<br/>攻击判定 / 蒙太奇播放"]
-    BT -->|"BTT_PlayHitReaction → PlayHitMontage"| Trace
+    BTS["BTS_UpdateAIState<br/>每帧决策<br/>前提：非受控、非 Attack"] -->|"AI_SetState<br/>Idle / Chase / Attack"| AI
+    BTS -->|"AddToken 成功才进 Attack"| GS["BP_GameState<br/>攻击令牌"]
+    BT --> BTS
 
+    BTD -->|"AIState == Attack"| T1["BTT_EnemyAttack<br/>只执行，不改状态"]
+    BTD -->|"AIState == Chase"| T2["BTTask_MoveTo<br/>引擎内置，Key = TargetActor"]
+    BTD -->|"受控状态"| T3["BT_ControlledState<br/>PlayHitMontage"]
+
+    T1 -->|AttackByType| Trace["BPC_AttackTrace<br/>攻击判定 / 蒙太奇生命周期"]
+    T3 -->|PlayHitMontage| Trace
+
+    Trace -->|"蒙太奇结束<br/>先 RemoveToken<br/>再 AI_ReturnToInitialState"| AI
     Trace -->|"查受击蒙太奇表"| DT[("DT_Reactions<br/>ST_AttackData")]
-    Trace -->|"AttackByType / PlayHitMontage"| ABP["敌人动画蓝图"]
+    Trace -->|AttackByType / PlayHitMontage| ABP["敌人动画蓝图"]
     Trace -->|SetMotionProfile| Motor["BPC_Motor<br/>招式代码位移"]
     ABP -->|"ANS_AttackWindow → OnAttackWindow"| Trace
     ABP -->|"ANS_Move → StartMotion / StopMotion"| Motor
@@ -1846,7 +2011,7 @@ flowchart TD
     Trace -->|PlayHitFeedback| FB["BPC_CombatFeedBack<br/>顿帧 / 音效"]
 ```
 
-**三处最容易画错的连线：**
+**四处最容易画错的连线：**
 
 ```
 ① 行为树不调 BPC_Motor
@@ -1855,15 +2020,17 @@ flowchart TD
      · BPC_AttackTrace（SetMotionProfile）
      · 动画通知 ANS_Move（StartMotion / StopMotion）
 
-② BPC_AI 与行为树之间没有直接引用
-   两者只通过黑板交换数据，并且是单向的：
-     · BPC_AI 写黑板：AI_RefreshTarget 写 TargetActor，AI_SetAIState 写 AIState
-     · 行为树只读黑板，不会反过来调 BPC_AI 的函数
+② 状态写入只有一个方向：BTS → BPC_AI
+   BPC_AI 不决策、不查询上层。
+   BTS 用 AI_SetState 请求普通转换，BPC_Attribute 用 AI_TryEnterState 抢占受击/死亡，
+   BPC_AttackTrace 用 AI_ReturnToInitialState 回流 —— 三者都是「上层往下写」。
 
-③ 受击方向和受击等级是一起走的
-   OnDamageApplied 同时带 HitOutCome 和 HitDirection，
-   BPC_AI 把方向写进黑板，Task 读它再传给 PlayHitMontage，
-   中间任何一环都不要自己重新算方向。
+③ BTT / BTD 只读黑板，不改任何值
+   改值只有 BTS（决策数据）和 BPC_AI（自己的数据 + AIState）。
+
+④ 受击方向和受击等级是一起走的
+   AI_TryEnterState 抢到受控状态后，ApplyState 同步 HitDirection / HitPending，
+   Task 读黑板再传给 PlayHitMontage，中间任何一环都不要自己重新算方向。
 ```
 
 **敌人侧和玩家侧的结构差别：**
@@ -1872,16 +2039,36 @@ flowchart TD
 玩家    输入 → BufferInput → Tick → Combat → 蒙太奇 / Motor / 伤害
         状态归 BPC_ActionState（组件），受击走 Combat.EnterHit
 
-敌人    感知 → BPC_AI → 写黑板 → BT_EnemyBase 读黑板 → Task
-        没有 BPC_ActionState，状态归 E_AIState，由 BPC_AI 维护并写进黑板
-        受击走 Attribute.OnDamageApplied → BPC_AI.HandleDamageApplied，不做 EnterHit
+敌人    感知 → BPC_AI（维护数据）→ 黑板 → BTS（决策）→ BTT（执行）
+        没有 BPC_ActionState，状态归 E_AIState，由 BPC_AI 仲裁并写进黑板
+        受击走 Attribute.OnDamageApplied → 内部受击处理 → AI_TryEnterState，不做 EnterHit
 
-两边共用：BPI_CharacterBase（取组件）、BPC_Attribute（伤害）、
-          BPC_Motor（招式位移）、BPC_CombatFeedBack（反馈）
+两边共用：BPI_CharacterBase（取组件 / IsCharacterDead / IsHostile）、
+         BPC_Attribute（伤害 / GetTeam）、BPC_Motor（招式位移）、
+         BPC_CombatFeedBack（反馈）
 ```
 
-**⚠️ 待补：** 敌人目前只有 `BTT_EnemyAttack` / `BTT_PlayHitReaction` 两个自定义 Task，
-`BT_ControlledState` 子树承载受控状态（受击 / 倒地 / 死亡），执行细节需打开行为树核对。
+**敌人行为树全部由引擎内置节点 + 三个自定义资产搭成，没有自定义 BTT_MoveToActor / BTD：**
+
+```
+BT_EnemyBase
+├─ BTS_UpdateAIState            自定义服务（Enemy/AI/Service）
+├─ Selector
+│   ├─ [BTDecorator_Blackboard] 受控状态 → BTTask_RunBehavior(BT_ControlledState)
+│   ├─ [BTDecorator_Blackboard] AIState == Attack → BTT_EnemyAttack
+│   ├─ [BTDecorator_Blackboard] AIState == Chase  → BTTask_MoveTo（引擎内置）
+│   └─ BTTask_Wait（引擎内置，待机）
+```
+
+**⭐ `Chase` 分支直接用引擎的 `Move To`，目标填黑板键 `TargetActor`：**
+
+```
+Move To 的 Blackboard Key 选 TargetActor
+→ 目标在动，导航系统自动重算路径，敌人持续跟随
+→ 不需要每帧下发指令，也不需要一个自定义任务去包一层
+```
+
+**⚠️ `Move To` 只在序列/选择器里持续运行时才会持续跟踪。如果它被上层 abort 掉（比如状态切到 Attack），跟随会停止 —— 这是期望行为。**
 
 ---
 
@@ -1919,6 +2106,7 @@ flowchart TD
 | 24  | 完美闪避反击                    | 完美闪避后没有限时反击奖励              | 新增反击窗口：窗口内轻 / 重击选择 `Counter_L1` / `Counter_H1` 起始行，后续连招继续走 `ST_AttackData.Next`；窗口过期回归普通攻击，接口不新增 |
 | 25  | 武器刀光                        | 攻击蒙太奇没有统一的刀光开关              | 新增 `M_WeaponTrail` / `NS_WeaponTrail` / `ANS_WeaponTrail`；通过 `BPI_WeaponBase.SetTrailActive(bool)` 控制 Niagara Ribbon，接口总数 94 → 95 |
 | 26  | 攻击令牌                        | 文档 3.6 要求「同屏 1~2 个敌人同时进攻」，工程内无实现 | `BPI_GameState` 接入 `AddToken` / `RemoveToken` / `HasToken`；`Tokens` 用 `Map<Actor, Float>` 记录持有时刻；`BTT_EnemyAttack` 申请、`BPC_AttackTrace` 归还、`BP_GameState` 三层兜底；`BPI_CharacterBase` 新增 `IsCharacterDead`，接口总数 95 → 96 |
+| 27  | 敌我阵营 + AI 分层重构             | 无阵营概念，敌人会互相误伤；AI 每帧 `ComputeNextState` 直接覆盖状态，攻击中被切走导致「一边跑一边砍」 | 新增 `E_Team` 与 `BPI_Attribute.GetTeam`、`BPI_CharacterBase.IsHostile`；`BPI_AI` 12 → 9，删除 `AI_AddPerceivedActor` / `AI_RemovePerceivedActor` / `AI_RefreshTarget` / `HandleDamageApplied`（转内部方法）、`AI_ResetAIState`（无引用），`AI_SetAIState` 改名 `AI_SetState`，新增 `AI_TryEnterState` / `AI_ReturnToInitialState`；决策权移到已接入的 `BTS_UpdateAIState`，`BPC_AI` 退化为仲裁器；Chase 使用行为树内置 `BTTask_MoveTo`，目标键为 `TargetActor`；接口总数 96 → 95 |
 
 ### 需要在编辑器里处理的遗留问题
 
@@ -1935,9 +2123,9 @@ flowchart TD
 ④ ST_AttackData.PoiseDdamageRate 拼写多一个 d
    同上，改名要连带所有读取点
 
-⑤ BPI_AI.HandleDamageApplied 的参数（已确认）
-   与 Attribute 的 OnDamageApplied 同源，至少含 E_HitOutCome 与 E_HitDirection
-   ⚠ 第三个参数（决定 HitLight / HitHeavy 的那一位）签名需在编辑器里再核一次
+⑤ 原 BPI_AI.HandleDamageApplied 已转为 BPC_AI 内部方法
+   受击流程改为 Attribute.OnDamageApplied → 内部处理 → AI_TryEnterState
+   不再作为接口暴露，外部不应再有绑定残留
 
 ⑥ Get* 归属已统一到 BPI_CharacterBase（已完成）
    基类持有：GetAttributeComponent、GetCombatFeedbackComponent、GetMotorComponent、
