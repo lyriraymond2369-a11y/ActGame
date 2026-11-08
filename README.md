@@ -54,6 +54,7 @@
     - [3）闪避方向（四向）](#3闪避方向四向) —— 方向判定、参考系对齐、四行数据
     - [4）动作位移：水平与垂直冲量必须分开处理](#4动作位移水平与垂直冲量必须分开处理) —— 近身撞人时上挑被吞的原因
     - [5）刀光：Niagara 条带拖尾](#5刀光niagara-条带拖尾) —— 为什么不用静态弧面、条带的三条硬设置
+    - [6）攻击令牌：同屏进攻名额](#6攻击令牌同屏进攻名额) —— 四道守卫、三层兜底、永远留一个在外围
 - [9，运行导图](#9运行导图) —— 组件之间的实际流转
     - [1）玩家运行导图](#1玩家运行导图) —— 输入到伤害
     - [2）敌人运行导图](#2敌人运行导图) —— 感知到伤害
@@ -73,7 +74,7 @@
 
 | 接口                       | 目录                                 | 函数数 | 对应实现               |
 | ------------------------ | ---------------------------------- | --- | ------------------ |
-| BPI_CharacterBase        | Code/Interface                     | 8   | 无（纯接口，所有组件获取的统一入口） |
+| BPI_CharacterBase        | Code/Interface                     | 9   | 无（纯接口，所有组件获取的统一入口） |
 | BPI_Attribute            | Code/ActorComponent/Attribute      | 14  | BPC_Attribute      |
 | BPI_CombatFeedBack       | Code/ActorComponent/CombatFeedBack | 4   | BPC_CombatFeedBack |
 | BPI_Motor                | Code/ActorComponent/Motor          | 9   | BPC_Motor          |
@@ -89,7 +90,7 @@
 | BPI_AttackTrace          | Enemy/Component/AttackTrace        | 3   | BPC_AttackTrace    |
 | BPI_AI                   | Enemy/Component/AI                 | 12  | BPC_AI             |
 
-合计 95 个接口函数。
+合计 96 个接口函数。
 
 ---
 
@@ -115,6 +116,7 @@
 | GetHitBoxComponent         | /                            | BoxComponent               | 获取角色的受击盒                 |
 | GetWeapon                  | /                            | BP_WeaponBase 对象引用         | 获取角色当前武器                 |
 | ApplyImpulse               | Vector3，XYOverride，ZOverride | /                          | 按状态计算当前应施加的冲量            |
+| IsCharacterDead            | /                            | bool                       | 角色是否死亡。**不依赖 Attribute 组件，供 GameState 等全局层判断** |
 
 > **这里是全部「取组件 / 取引用」的唯一入口。**
 > `BPI_Player` 与 `BPI_EnemyBase` 不再重复声明 `GetMesh` / `GetHitBox` / `GetWeapon` / `GetAttributeComponent`，写蓝图时统一从基类接口取。
@@ -1661,6 +1663,114 @@ NiagaraComponent 附在武器 Mesh 的「刀尖」socket 上
 
 ---
 
+### 6）攻击令牌：同屏进攻名额
+
+**多个敌人同时进攻时，玩家无法同时观察多条前摇 —— 完美闪避的 0.15s 窗口、格挡的朝向判断都会退化成运气。令牌就是限制同屏进攻人数的全局闸门。**
+
+**⭐ 设计原则：永远至少留 1 个敌人在外围。玩家永远要有喘息窗口。**
+
+```
+场上存活      MaxToken     效果
+1             1            单人正常打
+2             1            一个打、一个绕
+3             2            两个打、一个绕
+4 以上        2            不再放宽
+```
+
+```
+MaxToken = Clamp(存活敌人数 − 1, 1, 2)
+```
+
+**数据结构（`BP_GameState`）：**
+
+| 变量 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `Tokens` | **Map\<Actor, Float\>** | 空 | 持有者 → 拿令牌的时刻 |
+| `MaxToken` | Int | 2 | 同时持有上限，按存活人数动态算 |
+| `TokenTimeout` | Float | 5.0 | 单人单次持有上限（秒） |
+| `TokenCooldown` | Float | 0.4 | 全局释放冷却（秒） |
+| `LastReleaseTime` | Float | -1000 | 上次释放时刻 |
+
+**⭐ 必须用 Map 而不是「Actor 数组 + Float 数组」：**
+
+```
+超时判断需要「谁持有 + 何时开始持有」两份信息
+平行数组只要有一次 Add / Remove 忘了同步 → 索引错位
+→ 超时判断取到别人的时间 → 某人莫名被踢，且不报错
+Map 的 Add(Key, Value) / Remove(Key) 天然不会错位
+```
+
+**`AddToken` 的四道守卫（缺一不可）：**
+
+```
+① IsValid(Holder) == false              → false    空引用
+② Tokens.Contains(Holder) == true       → true     幂等：已持有视为成功
+③ Tokens.Length() >= MaxToken           → false    名额满
+④ Now − LastReleaseTime < TokenCooldown → false    冷却中
+⑤ 通过 → Tokens.Add(Holder, Now)        → true
+```
+
+**⭐ ②返回 `true` 不是笔误：AI 每次决策都会问一次，返回 false 会让它误以为没拿到而反复重试。**
+
+**`RemoveToken`：**
+
+```
+① Tokens.Contains(Holder) == false → Return        幂等
+② Tokens.Remove(Holder)
+③ LastReleaseTime = Now
+```
+
+**⚠️ 顺序不能反。先记冷却再判 Contains 的话，玩家的攻击结束（从不持有令牌）也会刷新冷却，敌人会集体变懒 —— 而且这个 bug 极难联想到玩家攻击上。**
+
+**申请与归还的分工：**
+
+```
+申请（决策层）   BTT_EnemyAttack · Execute
+                   → AddToken(Owner)
+                   → 失败即 Finish Execute(false)，让 BT 回退到绕圈分支
+                   → BTT 只回答"这次攻击能不能执行"，不问"不能执行时干什么"
+
+归还（执行层）   BPC_AttackTrace · OnMontageFinished
+                   → RemoveToken(Owner)
+                   → 谁拥有蒙太奇生命周期，谁负责收尾
+```
+
+**⭐ 为什么不两边都放 BTT：任务 `Finish Execute` 之后回调状态是否有效不确定，容易出「回调执行了但拿不到 Owner」。而蒙太奇一定有终点，AttackTrace 的释放更可靠。**
+
+**⭐ 为什么不放 `BPC_AI`：`OnMontageFinished` 已在 BTT 里绑定，再加一处订阅会冲突。**
+
+**三层兜底（`BP_GameState` · Tick，间隔 0.5s）：**
+
+```
+① IsValid(Holder) 失败                          → 移除
+② 实现 BPI_CharacterBase 且 IsCharacterDead      → 移除
+③ Now − Tokens.Find(Holder) > TokenTimeout      → 移除
+```
+
+**先收集到临时数组，再统一 Remove —— 不要边遍历边改 Map。**
+
+**⚠️ 这三层不能省。敌人死亡、被击倒、BTT 异常中止、组件被禁用，任意一条路径漏了释放，令牌就永久占用。**
+
+```
+表现：全场只剩 MaxToken−1 个敌人能动
+特征：不报错、不崩溃，只表现为"敌人越来越懒"
+时效：前 10 秒完全正常，越往后越明显
+```
+
+**没有令牌的敌人：**
+
+```
+保持距离 800~1200（与软锁 1200 呼应）
+绕圈位移，始终朝向玩家
+偶尔播一个前摇然后取消（假动作）
+```
+
+**⭐ 假动作成本几乎为零（播蒙太奇 → 判定帧前 Stop），但能把"打木桩"变成"同时管理多个威胁"。**
+
+**⚠️ 拿到令牌后立刻出招。拿着令牌发呆会白占名额，玩家看到的是敌人不动。**
+
+---
+
 ## 9，运行导图
 
 > 组件之间的实际流转。图上只画调用关系，判断规则看 [8，功能实现](#8功能实现)。
@@ -1808,6 +1918,7 @@ flowchart TD
 | 23  | 完美闪避的残影                  | 文档未涉及                            | 新增 `M_Afterimage` / `BP_Afterimage` / `BPI_Afterimage` + `BPI_Player.StartAfterimage` / `StopAfterimage`，接口总数 92 → 94；`ActiveGhosts` 必须清理，否则只有首次完美闪避能出残影 |
 | 24  | 完美闪避反击                    | 完美闪避后没有限时反击奖励              | 新增反击窗口：窗口内轻 / 重击选择 `Counter_L1` / `Counter_H1` 起始行，后续连招继续走 `ST_AttackData.Next`；窗口过期回归普通攻击，接口不新增 |
 | 25  | 武器刀光                        | 攻击蒙太奇没有统一的刀光开关              | 新增 `M_WeaponTrail` / `NS_WeaponTrail` / `ANS_WeaponTrail`；通过 `BPI_WeaponBase.SetTrailActive(bool)` 控制 Niagara Ribbon，接口总数 94 → 95 |
+| 26  | 攻击令牌                        | 文档 3.6 要求「同屏 1~2 个敌人同时进攻」，工程内无实现 | `BPI_GameState` 接入 `AddToken` / `RemoveToken` / `HasToken`；`Tokens` 用 `Map<Actor, Float>` 记录持有时刻；`BTT_EnemyAttack` 申请、`BPC_AttackTrace` 归还、`BP_GameState` 三层兜底；`BPI_CharacterBase` 新增 `IsCharacterDead`，接口总数 95 → 96 |
 
 ### 需要在编辑器里处理的遗留问题
 
@@ -1853,6 +1964,15 @@ flowchart TD
    取消窗口现在由 Combat 按 ST_AttackData.CancelStart 数据驱动
    AN_Cancel 只引用了 ActionState、没调 SetCancelWindow
    要么删掉这个通知，要么改成让它调 SetCancelWindow，别两边并存
+
+⑩ 静态弧面刀光已废弃，BP_Slash / BPI_Slash 已删除
+   刀光改用 NS_WeaponTrail 的 Ribbon Renderer
+   静态弧面需要为每个攻击方向单独对齐 socket 坐标系，已确认不划算
+   ⚠ M_SwordSlash 材质已无引用，可一并删除
+
+⑪ BPC_AttackTrace 的 TraceStart / TraceEnd / TraceColor 是伤害判定
+   不是调试绘制，与玩家侧判定同源
+   → 判定框可视化调试工具仍然缺失，这是调招式数据时的主要盲区
 ```
 
 ---
