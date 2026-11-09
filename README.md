@@ -216,6 +216,22 @@
 | Left  | 左边   |
 | Right | 右边   |
 
+##### 四，E_Team（阵营）
+
+| 枚举值       | 枚举含义          |
+| --------- | ------------- |
+| Neutral   | 中立 / 无阵营（环境物件） |
+| Player    | 玩家            |
+| Enemy     | 敌人（含训练木桩）     |
+
+> **资产位置**：`Code/Enum/E_Team`，与 `E_AttackType` / `E_HitOutCome` / `E_HitDirection` 同目录。
+>
+> **新值一律追加在末尾，不要插入中间** —— 插在中间会让已保存资产按旧索引解析。
+>
+> 敌我判定统一走 `BPI_CharacterBase.IsHostile`，规则：**对方未实现接口 / 同队 → `false`；不同阵营 → `true`**。`Neutral` 不做例外，所以「忘记配 Team」的失败表现是「打不到它」而不是「互相误伤」。
+>
+> **归属**：阵营是所有角色的固有属性（玩家 / 敌人 / 未来的友军共用一套），因此属于 CharacterBase 层，不属于 EnemyBase。
+
 #### （2）结构体
 
 ##### 一，ST_AttackData
@@ -500,17 +516,9 @@ SetState         不用判断   —— 复位收尾
 >
 > **⭐ `Attack` 不会被 `Chase` 覆盖，靠的不是优先级** —— 而是 `BTS_UpdateAIState` 在 Attack 期间直接 Return（见下节）。非受控状态优先级都是 0，本来就拦不住彼此。
 
-##### 二，E_Team
+##### 二，E_Team（已移至 [1，CharacterBase · 2）CharacterBase 数据类型](#2characterbase-数据类型)）
 
-| 枚举值       | 枚举含义          |
-| --------- | ------------- |
-| Neutral   | 中立 / 无阵营（环境物件） |
-| Player    | 玩家            |
-| Enemy     | 敌人（含训练木桩）     |
-
-> **新值一律追加在末尾，不要插入中间** —— 插在中间会让已保存资产按旧索引解析。
->
-> 敌我判定统一走 `BPI_CharacterBase.IsHostile`，规则：**对方未实现接口 / 同队 → `false`；不同阵营 → `true`**。`Neutral` 不做例外，所以「忘记配 Team」的失败表现是「打不到它」而不是「互相误伤」。
+**E_Team 属于 CharacterBase 层：阵营是所有角色的固有属性，与敌人无关。见上文的 CharacterBase 枚举。**
 
 ---
 
