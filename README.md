@@ -51,10 +51,11 @@
 - [8，功能实现](#8功能实现) —— 单个机制的设计细则
     - [1）敌人受击状态机](#1敌人受击状态机) —— 等级、优先级、幂等与重播
     - [2）完美闪避与无敌帧](#2完美闪避与无敌帧) —— 无敌区间 / 完美窗口 / 奖励链
-    - [3）闪避方向（四向）](#3闪避方向四向) —— 方向判定、参考系对齐、四行数据
-    - [4）动作位移：水平与垂直冲量必须分开处理](#4动作位移水平与垂直冲量必须分开处理) —— 近身撞人时上挑被吞的原因
-    - [5）刀光：Niagara 条带拖尾](#5刀光niagara-条带拖尾) —— 为什么不用静态弧面、条带的三条硬设置
-    - [6）攻击令牌：同屏进攻名额](#6攻击令牌同屏进攻名额) —— 四道守卫、三层兜底、永远留一个在外围
+    - [3）完美格挡](#3完美格挡) —— 判定、格挡 CD、反击窗口、与闪避反击的优先级
+    - [4）闪避方向（四向）](#4闪避方向四向) —— 方向判定、参考系对齐、四行数据
+    - [5）动作位移：水平与垂直冲量必须分开处理](#5动作位移水平与垂直冲量必须分开处理) —— 近身撞人时上挑被吞的原因
+    - [6）刀光：Niagara 条带拖尾](#6刀光niagara-条带拖尾) —— 为什么不用静态弧面、条带的三条硬设置
+    - [7）攻击令牌：同屏进攻名额](#7攻击令牌同屏进攻名额) —— 四道守卫、三层兜底、永远留一个在外围
 - [9，运行导图](#9运行导图) —— 组件之间的实际流转
     - [1）玩家运行导图](#1玩家运行导图) —— 输入到伤害
     - [2）敌人运行导图](#2敌人运行导图) —— 感知到伤害
@@ -84,13 +85,13 @@
 | BPI_ActionState          | Player/Component/ActionState       | 8   | BPC_ActionState    |
 | BPI_BufferInput          | Player/Component/BufferInput       | 3   | BPC_BufferInput    |
 | BPI_CameraDirector       | Player/Component/CameraDirector    | 1   | BPC_CameraDirector |
-| BPI_Combat               | Player/Component/Combat            | 7   | BPC_Combat         |
+| BPI_Combat               | Player/Component/Combat            | 9   | BPC_Combat         |
 | BPI_LockOn               | Player/Component/LockOn            | 6   | BPC_LockOn         |
 | BPI_EnemyBase            | Enemy                              | 2   | BP_EnemyBase       |
 | BPI_AttackTrace          | Enemy/Component/AttackTrace        | 3   | BPC_AttackTrace    |
 | BPI_AI                   | Enemy/Component/AI                 | 9   | BPC_AI             |
 
-合计 95 个接口函数。
+合计 97 个接口函数。
 
 ---
 
@@ -361,6 +362,8 @@ SetState         不用判断   —— 复位收尾
 | GetCurrentAttack | /    | ST_AttackData | 获取当前动作的数据      |
 | OnAttackWindow   | bool | /             | 开关攻击窗口（由 ANS_AttackWindow 触发） |
 | EnterHit         | E_ActionState，E_HitDirection | /   | 进入受击处理（由 Attribute 的 OnDamageApplied 触发） |
+| TryGuard         | /    | bool          | 格挡入口：状态判断 + CD 判断 + 原流程。**门槛统一在这里，玩家蓝图不存变量** |
+| SetLastGuardEndTime | float（Time） | /   | 启动或清空格挡 CD（传 -9999 即清空）。**格挡 CD 只由这个接口修改** |
 
 > **位移不再经过 Combat。** `ANS_Move` 直接调 `BPI_Motor.StartMotion` / `StopMotion`，
 > Combat 只负责在动作开始时用 `SetMotionProfile` 下发速度和方向。
@@ -395,7 +398,17 @@ SetState         不用判断   —— 复位收尾
 | KnockDown  | 倒地（受控）                   |
 | Dead       | 死亡（受控，绝对终态）              |
 
-##### 二，E_CameraShakeType（屏幕抖动类型）
+##### 二，E_CounterType（反击窗口类型）
+
+| 枚举值   | 含义           | 优先级 |
+| -------- | ------------ | ---- |
+| None     | 无窗口       | 0    |
+| Block    | 格挡反击窗口 | 1    |
+| Dodge    | 闪避反击窗口 | **2（高）** |
+
+> **完美闪避更难，所以 `Dodge` 优先级更高**：两种窗口冲突时以 `Dodge` 为准，`Block` 不覆盖 `Dodge`。
+
+##### 三，E_CameraShakeType（屏幕抖动类型）
 
 | 枚举值          | 枚举含义   |
 | ------------ | ------ |
@@ -405,7 +418,7 @@ SetState         不用判断   —— 复位收尾
 | Break        | 破韧抖动   |
 | Kill         | 死亡抖动   |
 
-##### 三，E_InputType
+##### 四，E_InputType
 
 | 枚举值     | 枚举含义 |
 | ------- | ---- |
@@ -415,7 +428,7 @@ SetState         不用判断   —— 复位收尾
 | Jump    | 跳跃   |
 | Execute | 处决   |
 
-##### 四，E_LockOnState（锁定状态）
+##### 五，E_LockOnState（锁定状态）
 
 | 枚举值  | 枚举含义 |
 | ---- | ---- |
@@ -423,7 +436,7 @@ SetState         不用判断   —— 复位收尾
 | Soft | 软锁   |
 | Hard | 硬锁   |
 
-##### 五，E_MoveState（移动状态）
+##### 六，E_MoveState（移动状态）
 
 | 枚举值  | 枚举含义 |
 | ---- | ---- |
@@ -1418,14 +1431,24 @@ E_InputType 只有 Light / Heavy / Dodge / Jump / Execute
 
 **⭐ 因为连招推进用的是 `ST_AttackData.Next` 行名跳转（不是字符串拼接），所以**只有"起手选行"需要分支，连招推进完全由数据驱动，这一步一行都不用改。**
 
+**反击窗口由完美闪避与完美格挡共用，用枚举区分来源：**
+
+| `E_CounterType` | 含义 | 优先级 |
+| --- | --- | --- |
+| `None` | 无窗口 | 0 |
+| `Block` | 格挡反击窗口 | 1 |
+| `Dodge` | 闪避反击窗口 | **2（高）** |
+
+> **完美闪避更难（需要无敌帧恰好覆盖判定点），所以闪避反击优先级高于格挡反击。**
+
 **变量（`BPC_Combat`）：**
 
 | 变量 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
-| `bCounterWindowOpen` | bool | false | 是否处于反击窗口 |
+| `CounterType` | `E_CounterType` | `None` | 当前处于哪个反击窗口 |
 | `CounterWindowDuration` | float | 1.0 | 窗口时长，从收尾时刻算 |
 | `CounterTimerHandle` | TimerHandle | — | |
-| `bCounterUsed` | bool | false | 本轮是否已消费过反击起手 |
+| `CounterTypeUsed` | bool | false | 本轮是否已消费过反击起手 |
 
 **窗口从**收尾**开始算，不是从判定成功算：**
 
@@ -1438,15 +1461,17 @@ E_InputType 只有 Light / Heavy / Dodge / Jump / Execute
 **开窗与关窗：**
 
 ```
-OpenCounterWindow()
-  ├─ bCounterWindowOpen = true
-  ├─ bCounterUsed = false
+OpenCounterWindow(NewType : E_CounterType)
+  ├─ Branch: NewType == Block && CounterType == Dodge
+  │     → Return                              ← 闪避反击优先级更高，Block 不覆盖
+  ├─ CounterType = NewType
+  ├─ CounterTypeUsed = false
   ├─ Clear and Invalidate Timer(CounterTimerHandle)
   └─ Set Timer(CounterWindowDuration → CloseCounterWindow)
 
 CloseCounterWindow()
-  ├─ bCounterWindowOpen = false
-  └─ bCounterUsed = false
+  ├─ CounterType = None
+  └─ CounterTypeUsed = false
 ```
 
 **⚠️ `OpenCounterWindow` 必须排在 `SetState(Locomotion)` **之前**：**
@@ -1461,8 +1486,10 @@ CloseCounterWindow()
 
 ```
 GetAttackRowPrefix(bIsHeavy : bool) → String
-  ├─ Branch: bCounterWindowOpen == true AND bCounterUsed == false
+  ├─ Branch: CounterType == Dodge AND CounterTypeUsed == false
   │     → 返回 bIsHeavy ? "Counter_H" : "Counter_L"
+  ├─ Branch: CounterType == Block AND CounterTypeUsed == false
+  │     → 返回 bIsHeavy ? "BlockCounter_H" : "BlockCounter_L"
   └─ 否则
         → 返回 bIsHeavy ? "Heavy" : "Attack"
 ```
@@ -1473,7 +1500,7 @@ GetAttackRowPrefix(bIsHeavy : bool) → String
 ① 起手行 = GetAttackRowPrefix(自身类型) + "1"
    ← 只在"开一条新连招"时用；已经在连招中则继续走 CurrentAttack.Next
 
-② 若起手行以 "Counter" 开头 → bCounterUsed = true（消费掉）
+② 若起手行以 "Counter" 或 "BlockCounter" 开头 → CounterTypeUsed = true（消费掉）
 ```
 
 **⭐ 最容易写错的一句：**
@@ -1496,6 +1523,13 @@ GetAttackRowPrefix(bIsHeavy : bool) → String
 | `Counter_H1` | `Counter_H2` |
 | `Counter_H2` | `Counter_H3` |
 | `Counter_H3` | 空（收招） |
+| `BlockCounter_L1` | `BlockCounter_L2` |
+| `BlockCounter_L2` | `BlockCounter_L3` |
+| `BlockCounter_L3` | `BlockCounter_L4` |
+| `BlockCounter_L4` | 空（收招） |
+| `BlockCounter_H1` | `BlockCounter_H2` |
+| `BlockCounter_H2` | `BlockCounter_H3` |
+| `BlockCounter_H3` | 空（收招） |
 
 **`MotionSelf` 建议带向前位移：**
 
@@ -1504,6 +1538,9 @@ GetAttackRowPrefix(bIsHeavy : bool) → String
 反击第一段向前冲 150~250
 → 即使闪避把人带远了，反击也能自己补上
 → "闪避别跑太远"从硬约束降成软约束
+
+BlockCounter 是原地格挡，玩家本来就在近身
+→ 位移给 100~150 即可，不需要补距离
 ```
 
 **时序：**
@@ -1511,7 +1548,7 @@ GetAttackRowPrefix(bIsHeavy : bool) → String
 ```
 t = 0.35   收尾
            ├─ Player.StopAfterimage()
-           ├─ OpenCounterWindow()        ← 先开窗
+           ├─ OpenCounterWindow(Dodge)   ← 先开窗
            └─ SetState(Locomotion)       ← 再交还控制权
 t = 0.35~1.35   ★ 反击窗口（1.0s）
               按轻击 → Counter_L1 → L2 → L3 → L4
@@ -1530,29 +1567,307 @@ t = 1.35   CloseCounterWindow()
 这是 Next 链结构带来的天然好处：续接属于数据，不受窗口影响
 ```
 
-**清理路径（三条，缺一不可）：**
+**清理路径（四条，缺一不可）：**
 
 ```
 EnterHit              → CloseCounterWindow()    挨打就没了
 死亡                   → CloseCounterWindow()
 DoDodge（重新闪避）    → CloseCounterWindow()    开新一轮，旧窗口作废
+DoJump                → CloseCounterWindow()    跳跃也是重开动作
 ```
 
 **⚠️ 和 `bSlowMoActive` / `bPerfectDodgeUsed` 同一类问题：窗口是状态量，必须显式关闭。少了 `DoDodge` 那一处，会出现"闪避失败后仍能打出反击"。**
 
+**⚠️ `DoJump` 那条同理：不关的话会出现"跳起来还能打出反击"。**
+
 **每轮只奖励一次起手：**
 
 ```
-窗口内打出 Counter_L1 → bCounterUsed = true
+窗口内打出 Counter_L1 → CounterTypeUsed = true
 → 窗口剩余时间里再按攻击 → 前缀回落到 Attack / Heavy
 → 但已经开始的反击连招继续按 Next 走完
 ```
 
-**这就是 `bCounterUsed` 与 `CurrentAttack.Next` 的分工：前者管"能不能起手"，后者管"能不能续接"。**
+**这就是 `CounterTypeUsed` 与 `CurrentAttack.Next` 的分工：前者管"能不能起手"，后者管"能不能续接"。**
 
 ---
 
-### 3）闪避方向（四向）
+### 3）完美格挡
+
+> **状态：设计已定稿，实现进行中。**
+>
+> **⚠️ 本节只写完美格挡。普通格挡受击（`Blocked` 非完美）的表现与状态处理尚未完善，不在此列。**
+
+#### （1）完美格挡与完美闪避的定位差别
+
+| 项 | 完美闪避 | 完美格挡 |
+| --- | --- | --- |
+| 判定条件 | 无敌帧内**且**处于完美窗口 | 格挡中 + **正面** + `Poise > 0` + 处于完美窗口 |
+| 判定位置 | `ReceiveDamage` 第 ② 条 | `ReceiveDamage` 第 ③ 条 |
+| 结果 | `Ignore` 完全不受伤 | `Blocked` 完全不受伤（免伤） |
+| 后续奖励 | 慢动作 + 残影 + 反击窗口 | 退出格挡 + 清格挡 CD + 反击窗口 |
+| 反击窗口 | `Counter_*` | `BlockCounter_*` |
+| 窗口优先级 | 高 | 低 |
+
+```
+两者共用同一套「反击窗口」机制，只在两个地方分叉：
+   ① 开窗时传的 E_CounterType（Dodge / Block）
+   ② GetAttackRowPrefix 选的行名前缀
+```
+
+**⭐ 完美闪避优先级更高（`E_CounterType.Dodge` > `E_CounterType.Block`）：**
+
+```
+完美闪避要求无敌帧恰好覆盖判定点，条件更苛刻
+→ 如果两种窗口冲突（例如闪避收尾瞬间正好完美格挡），以闪避为准
+→ 实现方式是 OpenCounterWindow 里 Block 不覆盖 Dodge
+```
+
+#### （2）判定：复用 `ReceiveDamage` 已有输出
+
+**不新增判定函数。`BPI_Attribute.ReceiveDamage` 第 ③ 条已经返回 `bPerfectBlock`：**
+
+```
+③ 格挡 + 正面 + Poise > 0
+     在 PerfectGuardWindow 内   → Blocked + bPerfectBlock = true（免伤）
+     否则                       → Blocked，伤害 ×(1−GuardDamageRate)，削轫 ×GuardPoiseRate
+```
+
+**⭐ 所以"判定"这件事本来就完成了，本节要补的是**判定成功之后发生什么**。**
+
+#### （3）防重复：`bPerfectBlockUsed`
+
+**和 `bPerfectDodgeUsed` 完全同构。**
+
+| 变量 | 所在 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `bPerfectBlockUsed` | `BPC_Attribute` | bool | false | 本轮格挡段是否已奖励过完美 |
+
+```
+EnterGuard()        → bPerfectBlockUsed = false     进入格挡时复位
+完美格挡判定成功     → 只有 false 时才广播，然后置 true
+```
+
+**为什么必须有：**
+
+```
+敌人三连击，第一段完美格挡、第二三段仍在完美窗口内
+→ 没有这个标志会连续触发三次：三次退格挡、三次清 CD、三次开窗、三次震屏
+```
+
+**⚠️ 和 `bPerfectDodgeUsed` 一样，它是"一次格挡段只奖励一次"的唯一保证。不能靠"格挡已经退出了"兜底 —— 判定发生在退出之前。**
+
+#### （4）判定成功后发生什么：只广播，不做收尾
+
+```
+ReceiveDamage 第 ③ 条，完美命中且本轮未奖励：
+   bPerfectBlockUsed == false ?
+      → bPerfectBlockUsed = true
+      → Broadcast OnPerfectBlock
+   return (Blocked, true, false)
+```
+
+**判定层只做两件事：置 flag、广播。所有收尾动作都不在这一层。**
+
+**`BPC_Combat` 绑了 `OnPerfectBlock`，`HandlePerfectBlock` 里做三件事：**
+
+```
+HandlePerfectBlock()
+  ├─【1】退出格挡：调用 Player 的退出格挡接口（现有，不新增）
+  │        → Attribute.ExitGuard() → bIsGuarding = false
+  │        → SetState(Locomotion)
+  ├─【2】清格挡 CD：SetLastGuardEndTime(-9999)   ← 立刻可以再格挡
+  ├─【3】OpenCounterWindow(Block)                ← 打开格挡反击窗口
+  └─【4】震屏（E_CameraShakeType.PerfectBlock）+ 音效 + 顿帧
+```
+
+**⭐ `OnPerfectBlock` 与 `OnPerfectDodge` 用同一个模式 —— 独立分发器、无参数、由 `BPC_Combat` 订阅。读代码的人不用记两套。**
+
+**⚠️ 完美格挡**不进入受击状态**：**
+
+```
+完美格挡 = 你挡住了，而且挡得漂亮
+→ 玩家应该立刻能反击，不能被受击动画锁住
+→ 所以 HandlePerfectBlock 里直接回 Locomotion，不走 EnterHit
+```
+
+#### （5）格挡 CD：为什么需要，加在哪
+
+**问题：** 完美格挡会强制退出格挡。如果没有任何代价，玩家可以「格挡 → 完美 → 立刻再格挡」无限循环，等于无敌。
+
+**所以普通退出格挡要付一点冷却，而完美格挡把这个冷却免掉 —— 这才是奖励。**
+
+| 变量 | 所在 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `GuardCD` | `BPC_Combat` | float | 0.4 | 普通退出格挡后的冷却 |
+| `LastGuardEndTime` | `BPC_Combat` | float | -9999 | 上次退出格挡的时刻 |
+
+**派生判断（不存 bool，避免状态量泄漏）：**
+
+```
+bGuardOnCooldown = (Now - LastGuardEndTime) < GuardCD
+```
+
+**⚠️ `LastGuardEndTime` 是 `BPC_Combat` 的变量，外部**不能直接写**，必须走接口：**
+
+```
+BPI_Combat.SetLastGuardEndTime(Time : float)
+   Player 主动松开格挡 → SetLastGuardEndTime(Now)        → 启动 CD
+   HandlePerfectBlock  → SetLastGuardEndTime(-9999)     → 清空 CD
+```
+
+**⭐ 依赖方向：`BPC_Attribute` 是通用组件（敌人也有），不该反过来调 Player 特有的 `BPC_Combat`。所以"启动 CD"这件事放在 Player 侧的入口，Combat 只提供接口。**
+
+#### （6）格挡入口：只在原流程前加一道门槛
+
+**原流程（不动）：**
+
+```
+TryEnterState(Guard) → Attribute.EnterGuard() → 锁定动作
+```
+
+**新增门槛（`BPC_Combat.TryGuard`）：**
+
+```
+TryGuard() → bool
+  ├─【1】Branch: BPI_ActionState.GetActionState() == Guard
+  │        → Return false                ← 已在格挡（用状态判断，最本质）
+  ├─【2】Branch: bGuardOnCooldown == true
+  │        → Return false                ← CD 内
+  └─【3】原流程：TryEnterState(Guard) → EnterGuard() → Return true
+```
+
+**⚠️ 第 1 步用 `GetActionState() == Guard`，不要用 `bIsGuarding`：**
+
+```
+ActionState.Guard   = 当前正在执行格挡动作     ← 判断"能不能再进格挡"用这个
+bIsGuarding         = 玩家仍持有格挡意图       ← 跨受击保留，用于伤害判定
+两者语义不同，不能互相替代
+```
+
+**⭐ 玩家蓝图里不加任何新变量 —— `GuardCD` / `LastGuardEndTime` 全在 `BPC_Combat`，外部只调 `TryGuard()` 与 `SetLastGuardEndTime()`。**
+
+#### （7）完整时间轴
+
+```
+t = 0.00   按下格挡
+           ├─ BPI_Combat.TryGuard()
+           │    ├─ GetActionState() != Guard ✅
+           │    ├─ bGuardOnCooldown == false ✅
+           │    └─ TryEnterState(Guard) → EnterGuard()
+           │         └─ bIsGuarding = true，bPerfectBlockUsed = false
+           └─ 进入格挡，锁定动作
+
+t = 0.10   敌人攻击命中
+           └─ ReceiveDamage 第 ③ 条
+                ├─ 正面 ✅  Poise > 0 ✅  在 PerfectGuardWindow 内 ✅
+                ├─ bPerfectBlockUsed == false → 置 true → Broadcast OnPerfectBlock
+                └─ Return (Blocked, true, false)
+
+           OnPerfectBlock → HandlePerfectBlock()
+                ├─ 退出格挡 → 回 Locomotion
+                ├─ SetLastGuardEndTime(-9999)      CD 清空
+                └─ OpenCounterWindow(Block)
+
+t = 0.10   玩家已可自由操作
+t = 0.10 ~ 0.90   ★ 格挡反击窗口
+           按轻击 → BlockCounter_L1 → L2 → L3 → L4
+           按重击 → BlockCounter_H1 → H2 → H3
+t = 0.90   CloseCounterWindow() → CounterType = None
+```
+
+**⭐ 窗口从**完美格挡那一刻**开始算（不是像闪避那样从收尾算）：**
+
+```
+完美格挡没有"锁在动作里"的收尾期
+→ 玩家在 t=0.10 就已经能动
+→ 窗口必须从这一刻开始计时，否则等于白送 0.25s
+```
+
+#### （8）涉及变量与接口
+
+**`BPC_Attribute`：**
+
+| 名称 | 类型 | 说明 |
+| --- | --- | --- |
+| `bPerfectBlockUsed` | bool | `EnterGuard` 复位，一次格挡段只奖励一次 |
+| `OnPerfectBlock` | 分发器 | 判定成功时广播，无参数 |
+| `EnterGuard` / `ExitGuard` | 现有 | **内部逻辑不动** |
+| `PerfectGuardWindow` | 现有 | 完美窗口长度 |
+
+**`BPC_Combat`：**
+
+| 名称 | 类型 | 说明 |
+| --- | --- | --- |
+| `GuardCD` | float | 0.4 |
+| `LastGuardEndTime` | float | -9999 |
+| `CounterType` | `E_CounterType` | 替代原 `bCounterWindowOpen` |
+| `CounterTypeUsed` | bool | 替代原 `bCounterUsed` |
+| `TryGuard()` | 内部函数 | 门槛 + 原流程 |
+| `SetLastGuardEndTime(Time)` | 接口实现 | 启动 / 清空格挡 CD |
+| `HandlePerfectBlock()` | 内部函数 | 退格挡 + 清 CD + 开窗 + 反馈 |
+
+**`BPI_Combat`：**
+
+| 方法名 | 输入 | 输出 | 作用 |
+| --- | --- | --- | --- |
+| `TryGuard` | / | bool | 格挡入口：状态判断 + CD 判断 + 原流程 |
+| `SetLastGuardEndTime` | float（Time） | / | 启动或清空格挡 CD（传 -9999 即清空） |
+
+**`DT_Attacks`：** 新增 `BlockCounter_L1..L4` / `BlockCounter_H1..H3`（见（13）节的行表）。
+
+**`E_CounterType`：** 新建枚举，`None` / `Block` / `Dodge`。
+
+**⭐ `E_CameraShakeType` 里已经有 `PerfectBlock` 与 `Block`，不需要新增。**
+
+#### （9）验证
+
+```
+【判定】
+□ 正面格挡 + 完美窗口内 → 退回格挡、清 CD、开 Block 窗口
+□ 三连击都在完美窗口内 → 只触发一次完美（bPerfectBlockUsed）
+□ 背面被打 → 不触发完美格挡
+□ Poise == 0 → 不触发完美格挡
+
+【格挡 CD】
+□ 主动松开格挡后 0.4s 内按格挡 → TryGuard 返回 false
+□ 0.4s 后按格挡 → 正常进入
+□ 完美格挡后立刻按格挡 → 正常进入（CD 已清）
+□ 已在格挡中再按格挡 → TryGuard 返回 false
+
+【反击窗口】
+□ 完美格挡后轻击 → BlockCounter_L1 → L2 → L3 → L4
+□ 完美格挡后重击 → BlockCounter_H1 → H2 → H3
+□ 窗口过期后轻击 → Attack1
+□ 完美闪避在 Block 窗口期间触发 → CounterType 变 Dodge（闪避优先）
+□ Block 守在 Dodge 窗口期间触发 → CounterType 保持 Dodge，不降级
+□ 挨打 / 死亡 / 重新闪避 / 跳跃 → 窗口关闭
+
+【接口数】
+□ BPI_Combat 7 → 9（TryGuard / SetLastGuardEndTime），总数 95 → 97
+```
+
+#### （10）四个最容易写错的点
+
+```
+① OnPerfectBlock 必须独立于 OnDamageApplied
+   OnDamageApplied 的参数里没有 bPerfectBlock（第三个 bool 是轻重等级）
+   不要为了省一个分发器去改它的签名 —— 所有绑定点都要跟着动
+
+② 完美格挡不要走 EnterHit
+   走了就会锁在受击动画里，反击窗口等于白送
+   HandlePerfectBlock 直接回 Locomotion
+
+③ 格挡入口判断"是否已在格挡"要用 ActionState，不是 bIsGuarding
+   但"受击结束后要不要回格挡"必须用 bIsGuarding（那时 ActionState 已经不是 Guard）
+
+④ LastGuardEndTime 只能通过 SetLastGuardEndTime 修改
+   BPC_Attribute 不该反向依赖 Player 特有的 BPC_Combat
+```
+
+---
+
+### 4）闪避方向（四向）
 
 > **状态：设计已定稿，实现进行中。** 下面只写已经确认的部分，未决项列在最后。
 
@@ -1659,7 +1974,7 @@ E_HitDirection  受击专用，后续会扩到前左 / 前右等 8 方向
 
 ---
 
-### 4）动作位移：水平与垂直冲量必须分开处理
+### 5）动作位移：水平与垂直冲量必须分开处理
 
 **约定：`MotionSelf` 里的水平分量（Forward / Right）与垂直分量（Up）在 `BPC_Motor` 内部**分开移动**，不合成一个 Sweep。**
 
@@ -1734,7 +2049,7 @@ E_HitDirection  受击专用，后续会扩到前左 / 前右等 8 方向
 
 ---
 
-### 5）刀光：Niagara 条带拖尾
+### 6）刀光：Niagara 条带拖尾
 
 **武器的挥砍轨迹用 Niagara 的 Ribbon Renderer 生成，不用静态弧面网格。**
 
@@ -1828,7 +2143,7 @@ NiagaraComponent 附在武器 Mesh 的「刀尖」socket 上
 
 ---
 
-### 6）攻击令牌：同屏进攻名额
+### 7）攻击令牌：同屏进攻名额
 
 **多个敌人同时进攻时，玩家无法同时观察多条前摇 —— 完美闪避的 0.15s 窗口、格挡的朝向判断都会退化成运气。令牌就是限制同屏进攻人数的全局闸门。**
 
@@ -2115,6 +2430,7 @@ Move To 的 Blackboard Key 选 TargetActor
 | 25  | 武器刀光                        | 攻击蒙太奇没有统一的刀光开关              | 新增 `M_WeaponTrail` / `NS_WeaponTrail` / `ANS_WeaponTrail`；通过 `BPI_WeaponBase.SetTrailActive(bool)` 控制 Niagara Ribbon，接口总数 94 → 95 |
 | 26  | 攻击令牌                        | 文档 3.6 要求「同屏 1~2 个敌人同时进攻」，工程内无实现 | `BPI_GameState` 接入 `AddToken` / `RemoveToken` / `HasToken`；`Tokens` 用 `Map<Actor, Float>` 记录持有时刻；`BTT_EnemyAttack` 申请、`BPC_AttackTrace` 归还、`BP_GameState` 三层兜底；`BPI_CharacterBase` 新增 `IsCharacterDead`，接口总数 95 → 96 |
 | 27  | 敌我阵营 + AI 分层重构             | 无阵营概念，敌人会互相误伤；AI 每帧 `ComputeNextState` 直接覆盖状态，攻击中被切走导致「一边跑一边砍」 | 新增 `E_Team` 与 `BPI_Attribute.GetTeam`、`BPI_CharacterBase.IsHostile`；`BPI_AI` 12 → 9，删除 `AI_AddPerceivedActor` / `AI_RemovePerceivedActor` / `AI_RefreshTarget` / `HandleDamageApplied`（转内部方法）、`AI_ResetAIState`（无引用），`AI_SetAIState` 改名 `AI_SetState`，新增 `AI_TryEnterState` / `AI_ReturnToInitialState`；决策权移到已接入的 `BTS_UpdateAIState`，`BPC_AI` 退化为仲裁器；Chase 使用行为树内置 `BTTask_MoveTo`，目标键为 `TargetActor`；接口总数 96 → 95 |
+| 28  | 完美格挡                        | 完美格挡只停留在 `ReceiveDamage` 的返回值，没有任何后续奖励；格挡没有冷却，可以无限重进 | 新增 `8，功能实现 · 3）完美格挡` 整节；`E_CounterType` 取代 `bCounterWindowOpen`（`None` / `Block` / `Dodge`，Dodge 优先级更高），`CounterTypeUsed` 取代 `bCounterUsed`；`BPC_Attribute` 新增 `bPerfectBlockUsed` 与 `OnPerfectBlock` 分发器；`BPC_Combat` 新增 `GuardCD` / `LastGuardEndTime` / `TryGuard` / `SetLastGuardEndTime` / `HandlePerfectBlock`，`OpenCounterWindow` 改收 `E_CounterType`；`DT_Attacks` 新增 `BlockCounter_L1..L4` / `BlockCounter_H1..H3`；接口总数 95 → 97（`BPI_Combat` 7 → 9）；**普通格挡受击（`Blocked` 非完美）的表现与状态处理尚未定稿，本节不含** |
 
 ### 需要在编辑器里处理的遗留问题
 
