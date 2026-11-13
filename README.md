@@ -6,12 +6,43 @@
 
 > **校对说明**：本文件已按 `Content/` 下的实际资产重新扫描校对（共 15 个 `BPI_`*、10 个 `E_`*、3 个 `ST_*`）。
 > **接口函数清单以蓝图编辑器「我的蓝图 → 函数」面板为准** —— UE 的 name table 会保留已删除函数的 FName 条目，直接扫二进制会把历史函数误报成现存函数。
-> 与旧版不一致的地方统一记在文末的「七、校对差异清单」里，方便逐条确认。
+> 与旧版不一致的地方统一记在文末的「[10，校对差异清单](#10校对差异清单)」里，方便逐条确认。
+
+---
+
+## 历史
+
+| 日期 | 修改内容 | 具体内容 | 修订人 |
+| --- | --- | --- | --- |
+| 2026.10.3 | 初稿 | 系统概括 | 作者 |
+| 2026.10.4 | 切换引擎 | 转为 UE | 作者 |
+| 2026.10.4 | 角色控件 | 角色控件关系图 | 作者 |
+| 2026.10.11 | 角色锁定 | 角色锁定系统 | 作者 |
+| 2026.10.12 | 设置锁定组件 | 更新组件关系图 | 作者 |
+| 2026.10.24 | 仓库初始化 | UE 工程首次提交 | 作者 |
+| 2026.10.31 | 项目资产入库 | `Config` / `Content Code` / `Player` / `Enemy` 自有资产；补充引擎角色模板资源（骨骼网格 / 动画 / 材质） | 作者 |
+| 2026.10.31 | 分层重构 | Attribute / ActionState / Combat 三层职责重划；补 `ReceiveDamage` 受击判定与 `ClearPoseBroken`；ActionState 去掉 Motor 依赖 | 作者 |
+| 2026.10.31 | 震屏链路 | `CombatFeedBack` 经 `BPI_CameraDirector.Shake` 接回震屏；`DT_Attacks` 攻击数据更新 | 作者 |
+| 2026.11.01 | 位移与受击 | 位移职责移交 Motor；接入玩家受击逻辑 | 作者 |
+| 2026.11.01 | 目录重构 | Attribute 迁至 `ActorComponent/Attribute`；`BPI_HIt` 并入 `BPI_Combat` | 作者 |
+| 2026.11.02 | 运行导图 | 新增玩家 / 敌人 Mermaid 运行导图；README 增加三级目录与锚点校验 | 作者 |
+| 2026.11.03 | 敌人受击 | 受击状态机 + 受击表现链路 | 作者 |
+| 2026.11.05 | 完美闪避 | 无敌帧 / 完美窗口 / 慢动作奖励；README 重构为「功能实现 + 运行导图」 | 作者 |
+| 2026.11.05 | 闪避收尾 | 改为延时收尾 + 只慢敌人；闪避默认方向按索敌状态 | 作者 |
+| 2026.11.06 | 闪避表现 | MetaSound 合成起始音；PoseableMesh 姿态残影 | 作者 |
+| 2026.11.06 | 闪避反击 | 完美闪避反击窗口与分离动作冲量 | 作者 |
+| 2026.11.07 | 刀光 | 改用 Niagara 条带拖尾，接入动画通知 | 作者 |
+| 2026.11.08 | 攻击令牌 | 限制同屏进攻人数，申请 / 归还 / 兜底三层 | 作者 |
+| 2026.11.08 | AI 重构 | 敌人 AI 状态流重构，接入阵营系统 | 作者 |
+| 2026.11.09 | 枚举归位 | `E_Team` 迁至 CharacterBase 枚举 | 作者 |
+| 2026.11.10 | 完美格挡 | 完美格挡判定、格挡 CD、`Block` 反击窗口 | 作者 |
 
 ---
 
 ## 目录
 
+- [历史](#历史) —— 版本变更记录
+- [规范](#规范) —— 写代码前必须遵守的硬规则
 - [0，接口总览](#0接口总览) —— 全部接口与函数数的总表，找不到东西先看这里
 - [1，CharacterBase（角色基类）](#1characterbase角色基类)
     - [1）CharacterBase 类接口方法](#1characterbase-类接口方法)
@@ -71,6 +102,151 @@
 接口名与其实现的组件名相同
 ```
 
+---
+
+## 规范
+
+> **这一节是硬规则清单。** 写蓝图之前先过一遍 —— 不符合的要么改代码，要么先改本节，**不要在代码里开特例**。
+>
+> 分层职责的深度展开另见 [6，写蓝图时的三条硬规矩](#6写蓝图时的三条硬规矩)。
+
+### 1）调用边界：跨组件只能走接口
+
+```
+① 一个蓝图只能通过目标组件实现的 BPI 接口调用它
+   不能 Cast To 具体组件蓝图，再调它的内部函数
+
+② Cast 的目标一律是基类接口（BPI_CharacterBase），不 Cast To BPI_Player
+   → 敌人挂同一套动画通知也不用改
+
+③ 组件自己的内部函数（【内部函数】）对外一律不可见
+   需要外部调用 → 先在 BPI 里加方法，再在组件里实现
+
+④ 数据的读取与写入同样走接口
+   例：LastGuardEndTime 只能通过 BPI_Combat.SetLastGuardEndTime 修改
+       外部直接写变量会让 CD 逻辑分叉到两处
+
+⑤ 跨组件链路要沿既定的中转走，不要抄近道
+   例：BPC_Combat 不直接碰 BPC_CameraDirector
+       走 CombatFeedBack → BPI_CameraDirector
+```
+
+**反例：**
+
+```
+✗ BPC_Combat → Cast To BPC_CameraDirector → 直接 PlayPerfectBlockCloseUp
+✓ BPC_Combat → BPI_CombatFeedBack.PlayHitFeedback → BPI_CameraDirector.PlayPerfectBlockCloseUp
+```
+
+### 2）函数类型：四种标注，缺一不可
+
+**文档与蓝图里提到函数时，必须能一眼看出它属于哪一类：**
+
+| 标注 | 含义 | 占接口计数 |
+| --- | --- | --- |
+| **【接口】** | 定义在 `BPI_xxx` 里，跨组件调用必须走它 | ✅ |
+| **【接口实现】** | `BPC_xxx` 里实现某个 `BPI` 函数 | ✅（归接口） |
+| **【内部函数】** | 组件自己的函数，外部不可调用 | ❌ |
+| **【事件】** | 分发器 / 自定义事件 | ❌ |
+| **【引擎 API】** | UE 自带节点 | ❌ |
+
+**⭐ 「接口数 98」只统计【接口】，其余三类都不计。**
+
+### 3）组件实现约束
+
+```
+① ActorComponent / SceneComponent 蓝图里不能用 Timeline 节点
+   Timeline 依赖 UTimelineComponent 作为成员，而 Add Component(Timeline)
+   只在 Actor 蓝图里提供
+   → 组件内需要插值的一律用 TickComponent 手动推进
+   → Set Timer by Event 在组件里可用，不受此限制
+
+② 组件内做插值时，时间源用 Get Game Time in Seconds
+   不要用 Tick 的 DeltaTime 累加 —— 顿帧会把该 Actor 的 DeltaTime 压到 0
+
+③ 组件的 Tick 只在必要时开启，用完立刻关
+   常开的 Tick 组件越多，帧预算越难控
+```
+
+### 4）时间与缩放
+
+```
+① 只慢敌人用 SetCustomTimeDilation，不用 SetGlobalTimeDilation
+   GlobalTimeDilation 会一并拖慢 Set Timer 的游戏时间
+   → 反击窗口、CD 的计时全部变长
+
+② 任何时间缩放都必须有恢复入口
+   开缩放时 Clear and Invalidate Timer，恢复时显式 Set 回 1.0
+   → 否则重复触发会叠加，或永久停在慢速
+
+③ 顿帧只作用于单个 Actor
+   需要「双方都停」时，双方各调一次 PlayHitStop(Self, 时长)
+
+④ 顿帧与慢速必须串行，不能同时开
+   同时开的话慢速期间的时间膨胀被顿帧覆盖，慢速时长会被拉长
+```
+
+### 5）位移与冲量
+
+```
+① 单体位移用 AddImpulse(bVelChange = true)
+   不要用 Launch Character —— 它会强制切到 MOVE_Falling，
+   后续 IsFalling 判定、空中动画全部被误触发
+
+② 水平与垂直冲量必须分开处理
+   不分开的话，近身撞人时上挑的垂直分量会被水平位移吞掉
+   （详见 8-5）
+
+③ 位移窗口由动画通知（ANS_Move）开合，不由 Combat 直接调
+   → 前摇不会提前滑出去
+```
+
+### 6）状态表达
+
+```
+① 一个状态只用一个变量表达
+   不要同时用 bool + enum / 两个 bool 描述同一件事
+   → 只要有一条路径忘了同步，就会出现「标志位说没在做、枚举停在中间」
+   → 这种 bug 不报错，只能靠读代码发现
+
+② 能从别的量算出来的，不要额外存 bool
+   bGuardOnCooldown = (Now - LastGuardEndTime) < GuardCD
+   → 不存 bGuardOnCooldown 本身
+
+③ 枚举新值一律追加在末尾，不插中间
+   插中间会让已保存的枚举值全部错位，而且不报错
+```
+
+### 7）依赖方向
+
+```
+① 状态层（BPC_ActionState）不引用任何其他组件
+   只管 CurrentState、bCanCancel 和转场规则
+
+② 通用组件（BPC_Attribute，敌人也有）不反向依赖玩家特有组件（BPC_Combat）
+   → 「启动格挡 CD」放在 Player 侧入口，Combat 只提供接口
+
+③ 伤害规则全部收在 BPC_Attribute
+   无敌、完美格挡、完美闪避、减伤、削轫、破韧都在这一个地方判定
+
+④ 判定与表现分离
+   Attribute 判定 + 广播带位置 → Combat 收尾 + 转发反馈
+   Attribute 不生成粒子、不震屏、不播音效
+```
+
+### 8）文档约定
+
+```
+① 接口函数清单以蓝图编辑器「我的蓝图 → 函数」面板为准
+   不要直接 grep .uasset —— name table 会保留已删除函数的 FName
+
+② 每个函数必须标注类型（见本节 2）
+③ 每次设计变更同时更新「历史」表与「10，校对差异清单」
+④ 接口数变化必须同步「0，接口总览」与本节的统计口径
+```
+
+---
+
 ## 0，接口总览
 
 | 接口                       | 目录                                 | 函数数 | 对应实现               |
@@ -84,14 +260,14 @@
 | BPI_Player               | Player                             | 12  | BP_Player          |
 | BPI_ActionState          | Player/Component/ActionState       | 8   | BPC_ActionState    |
 | BPI_BufferInput          | Player/Component/BufferInput       | 3   | BPC_BufferInput    |
-| BPI_CameraDirector       | Player/Component/CameraDirector    | 1   | BPC_CameraDirector |
+| BPI_CameraDirector       | Player/Component/CameraDirector    | 2   | BPC_CameraDirector |
 | BPI_Combat               | Player/Component/Combat            | 9   | BPC_Combat         |
 | BPI_LockOn               | Player/Component/LockOn            | 6   | BPC_LockOn         |
 | BPI_EnemyBase            | Enemy                              | 2   | BP_EnemyBase       |
 | BPI_AttackTrace          | Enemy/Component/AttackTrace        | 3   | BPC_AttackTrace    |
 | BPI_AI                   | Enemy/Component/AI                 | 9   | BPC_AI             |
 
-合计 97 个接口函数。
+合计 98 个接口函数。
 
 ---
 
@@ -134,7 +310,7 @@
 | AddBonus         | float（AttackDelta）                   | /                      | 添加武器加成                                          |
 | IsDead           | /                                    | bool（Dead）             | 角色是否死亡                                          |
 | TakeDamage       | float（BaseDamage），float（PoiseDamage） | bool（bIsBroken）        | 扣血扣韧，返回是否破韧。**内部不再乘防御**                         |
-| ReceiveDamage    | ST_AttackData，float，Vector3，float    | E_HitOutCome，bool，bool | 完整受击判定：攻击数据、基础伤害、受击位置、基础削轫 → 受击类型、是否完美格挡、是否完美闪避 |
+| ReceiveDamage    | ST_AttackData，float，Vector3（攻击者位置），Vector3（HitPoint），float | E_HitOutCome，bool，bool | 完整受击判定：攻击数据、基础伤害、攻击者位置、击中点、基础削轫 → 受击类型、是否完美格挡、是否完美闪避 |
 | ClearPoseBroken  | /                                    | /                      | 清除削轫破防效果                                        |
 | RestorePoise     | /                                    | /                      | 恢复韧性到 MaxPoise（Tick 里调用）                        |
 | EnterGuard       | /                                    | /                      | 进入格挡：置 bIsGuarding，记录 LastGuardTime             |
@@ -165,6 +341,29 @@
 
 **② 的两个条件是 `AND`：只判时间会把闪避结束后的受击误判成完美；只判无敌会把整个无敌区间都算成完美，缓冲带就没了。**
 
+**五个输入的分工：**
+
+| 输入 | 参与判定 | 用途 |
+| --- | --- | --- |
+| `ST_AttackData` | ✅ | 伤害倍率、削轫倍率 |
+| `BaseDamage` | ✅ | 基础伤害 |
+| `攻击者位置` | ✅ | **算受击方向**（正面 / 背面 / 左 / 右） |
+| `HitPoint` | ❌ | **只用于表现**：火花位置、震屏位置、FOV 特写锚点 |
+| `BasePoiseDamage` | ✅ | 基础削轫 |
+
+**⭐ `攻击者位置` 与 `HitPoint` 是两个不同的量，不能互相替代：**
+
+```
+攻击者位置 → 判断「攻击从哪个方向来」→ 决定正面/背面格挡
+HitPoint   → 判断「打在哪里」       → 决定火花生成在哪里
+
+贴身攻击时两者相差很小，长武器时相差很大
+用 HitPoint 算方向 → 长武器从侧面挥来会被判成正面格挡
+用攻击者位置做火花 → 火花会在敌人身上而不是武器接触点
+```
+
+**⚠️ `HitPoint` 不参与任何判定，加它只是为了让表现层有正确的锚点。**
+
 **韧性为 0 时格挡完全失效，完美格挡也一并失效。**
 
 #### （3）BPI_CombatFeedBack
@@ -174,7 +373,7 @@
 | PlayHitFeedback | E_HitOutCome（Outcome），Vector3（ImpactLocation），bool（bPerfect），Actor（OtherActor），float（BaseHitStop） | /   | 播放命中音效、顿帧、屏幕抖动                                |
 | PlayHitStop     | Actor，float                                   | /   | 根据命中者与时长播放顿帧                                  |
 | EndHitStop      | /                                             | /   | 离开顿帧                                          |
-| PlayPerfectDodgeSlowMo | /                                      | /   | 播放完美闪避的全局慢动作（自带恢复计时）                          |
+| PlayEnemySlowMo | float（Scale），float（Duration） | /   | 按倍率与时长放慢全场敌人（自带恢复计时）。**完美闪避传 (0.1, 0.5)，完美格挡传 (0.15, 0.12)** |
 
 #### （4）BPI_Motor
 
@@ -350,6 +549,7 @@ SetState         不用判断   —— 复位收尾
 | 方法名   | 输入                              | 输出  | 作用                           |
 | ----- | ------------------------------- | --- | ---------------------------- |
 | Shake | E_CameraShakeType，Vector3，float | /   | 根据抖动类型、受击位置、强度制造屏幕抖动         |
+| PlayPerfectBlockCloseUp | /                      | /   | 完美格挡的 FOV 特写：收窄 → 保持 → 回位。**收窄与顿帧同时开始** |
 
 #### （5）BPI_Combat
 
@@ -417,8 +617,24 @@ SetState         不用判断   —— 复位收尾
 | PerfectBlock | 完美格挡抖动 |
 | Break        | 破韧抖动   |
 | Kill         | 死亡抖动   |
+| PerfectDodge | 完美闪避抖动 |
 
-##### 四，E_InputType
+> **共 6 个值。** `BPC_CameraDirector` 里有 6 个对应变量：`Shake_Hit` / `Shake_Block` / `Shake_PerfectBlock` / `Shake_Break` / `Shake_Kill` / `Shake_PerfectDodge`，一一指向 `Player/CameraShake/BPCS_*`。
+>
+> **⚠️ `BPCS_PerfectDodge` 已从原 `BPCS_Perfect` 拆分出来，但参数暂未调整** —— 目前沿用拆分时的默认值，与 `BPCS_PerfectBlock` 尚未拉开差异。调法与参数见 [8，功能实现 · 3）完美格挡](#3完美格挡) 的（11）。
+
+##### 四，E_CloseUpPhase（完美格挡特写阶段）
+
+| 枚举值   | 含义      |
+| ----- | ------- |
+| None  | 无特写（空闲） |
+| In    | 收窄      |
+| Hold  | 保持      |
+| Out   | 回位      |
+
+> **`None` 兼作空闲态** —— 有了它就不再需要 `bCloseUpActive`。两个变量表达同一个状态，只要有一条路径忘了同步就会出现「标志位说没在做、枚举却停在 Out」的分叉，而且不报错。
+
+##### 五，E_InputType
 
 | 枚举值     | 枚举含义 |
 | ------- | ---- |
@@ -428,7 +644,7 @@ SetState         不用判断   —— 复位收尾
 | Jump    | 跳跃   |
 | Execute | 处决   |
 
-##### 五，E_LockOnState（锁定状态）
+##### 六，E_LockOnState（锁定状态）
 
 | 枚举值  | 枚举含义 |
 | ---- | ---- |
@@ -436,7 +652,7 @@ SetState         不用判断   —— 复位收尾
 | Soft | 软锁   |
 | Hard | 硬锁   |
 
-##### 六，E_MoveState（移动状态）
+##### 七，E_MoveState（移动状态）
 
 | 枚举值  | 枚举含义 |
 | ---- | ---- |
@@ -677,6 +893,8 @@ BTS 拿到令牌 → AI_SetState(Attack)
 ---
 
 ## 6，写蓝图时的三条硬规矩
+
+> 本节是 [规范](#规范) 第 7 条「依赖方向」的深度展开。完整规则清单见规范，这里是分层职责的具体边界。
 
 ```
 ① 状态层（BPC_ActionState）不引用任何其他组件
@@ -985,7 +1203,7 @@ ReceiveDamage 的 ② 条：
 ```
 ① CameraDirector.Shake(PerfectDodge)          震屏
 ② 音效
-③ CombatFeedBack.PlayPerfectDodgeSlowMo()     只慢敌人
+③ CombatFeedBack.PlayEnemySlowMo(0.1, 0.5)    只慢敌人（0.1 倍 × 0.5s）
 ④ Motor.SetMotionScale(0.3)                   位移衰减，控距离
 ⑤ bPerfectDodgePending = true
    Set Timer(PerfectDodgeCancelDelay → TryFinishPerfectDodge)
@@ -1135,13 +1353,13 @@ EndPerfectDodge()
 **用 `CustomTimeDilation` 挂在敌人身上，不碰全局时间。**
 
 ```
-PlayPerfectDodgeSlowMo()
+PlayEnemySlowMo(Scale, Duration)          【接口实现】BPC_CombatFeedBack
    ├─ 若 SlowMoActors 非空 → 先 RestoreSlowMo()          ← 防叠加
    ├─ Clear and Invalidate Timer(SlowMoTimerHandle)
    ├─ ForEach GetAllActorsOfClass(BP_EnemyBase)
-   │     IsValid? → Set CustomTimeDilation(SlowMoScale)
+   │     IsValid? → Set CustomTimeDilation(Scale)
    │              → Add 到 SlowMoActors
-   └─ Set Timer by Event(SlowMoDuration → RestoreSlowMo)
+   └─ Set Timer by Event(Duration → RestoreSlowMo)
 
 RestoreSlowMo()
    ├─ ForEach SlowMoActors → IsValid? → Set CustomTimeDilation(1.0)
@@ -1258,10 +1476,11 @@ PerfectDodgeCancelDelay 0.25  <  SlowMoDuration 0.5
 资产   ANS_IFrame                              无敌区间通知
        Montage_Dodge / Montage_Dodge_Air       各段内挂 ANS_IFrame
        E_CameraShakeType + PerfectDodge        追加到枚举末尾，别插中间
-       BPC_CameraDirector · Shake 分支          PerfectDodge → BPCS_Perfect
+       BPC_CameraDirector · Shake 分支          PerfectDodge → BPCS_PerfectDodge
+                                                ⚠️ 参数暂未调整，与 PerfectBlock 尚未拉开差异
 
 接口   BPI_Attribute      + SetInvincible / EndPerfectDodge
-       BPI_CombatFeedBack + PlayPerfectDodgeSlowMo
+       BPI_CombatFeedBack + PlayEnemySlowMo（原 PlayPerfectDodgeSlowMo，加 Scale / Duration）
        BPI_ActionState    + ClearDodgeCD
        BPI_Motor          + SetMotionScale
        BPI_Player         + StartAfterimage / StopAfterimage
@@ -1605,7 +1824,8 @@ DoJump                → CloseCounterWindow()    跳跃也是重开动作
 | 判定条件 | 无敌帧内**且**处于完美窗口 | 格挡中 + **正面** + `Poise > 0` + 处于完美窗口 |
 | 判定位置 | `ReceiveDamage` 第 ② 条 | `ReceiveDamage` 第 ③ 条 |
 | 结果 | `Ignore` 完全不受伤 | `Blocked` 完全不受伤（免伤） |
-| 后续奖励 | 慢动作 + 残影 + 反击窗口 | 退出格挡 + 清格挡 CD + 反击窗口 |
+| 后续奖励 | 慢动作 + 残影 + 反击窗口 | 顿帧 + 强震屏 + **FOV 特写** + 退出格挡 + 清 CD + 反击窗口 |
+| 感知核心 | **时间变慢** | **空间撞击** |
 | 反击窗口 | `Counter_*` | `BlockCounter_*` |
 | 窗口优先级 | 高 | 低 |
 
@@ -1635,6 +1855,27 @@ DoJump                → CloseCounterWindow()    跳跃也是重开动作
 
 **⭐ 所以"判定"这件事本来就完成了，本节要补的是**判定成功之后发生什么**。**
 
+**`ReceiveDamage` 的五个输入里，本节只用到两个位置：**
+
+```
+攻击者位置  → 判「从哪个方向来」→ 决定正面 / 背面格挡     ← 判定用
+HitPoint    → 判「打在哪里」   → 火花 / 震屏 / 特写锚点   ← 表现用
+```
+
+**⚠️ `HitPoint` **不参与判定**，只在完美格挡时透传给 `OnPerfectBlock`。**
+
+```
+ReceiveDamage 第 ③ 条，完美命中且本轮未奖励：
+   bPerfectBlockUsed == false ?
+      → bPerfectBlockUsed = true
+      → Broadcast OnPerfectBlock(HitPoint)      ← 带 Vector3，给表现层做锚点
+   return (Blocked, true, false)
+```
+
+**⭐ `OnPerfectBlock` 从无参数改为 `Vector3（HitPoint）` —— 表现层需要接触点才能把火花和震屏放对位置。**
+
+**⚠️ 改分发器签名后，`BPC_Combat` 里旧的绑定会**静默断开**，编辑器不报错，表现是"完美格挡的所有反馈全部消失"。改完必须进 `BeginPlay` 确认绑定线还在。**
+
 #### （3）防重复：`bPerfectBlockUsed`
 
 **和 `bPerfectDodgeUsed` 完全同构。**
@@ -1657,31 +1898,50 @@ EnterGuard()        → bPerfectBlockUsed = false     进入格挡时复位
 
 **⚠️ 和 `bPerfectDodgeUsed` 一样，它是"一次格挡段只奖励一次"的唯一保证。不能靠"格挡已经退出了"兜底 —— 判定发生在退出之前。**
 
-#### （4）判定成功后发生什么：只广播，不做收尾
+#### （4）判定成功后发生什么：判定层只广播，战斗层才动作
+
+**判定层（`BPC_Attribute`）只做两件事：置 flag、广播带 `HitPoint`。所有收尾与反馈都不在这一层。**
+
+**`BPC_Combat` 绑了 `OnPerfectBlock`，`HandlePerfectBlock(HitPoint)` 按固定顺序做五步：**
 
 ```
-ReceiveDamage 第 ③ 条，完美命中且本轮未奖励：
-   bPerfectBlockUsed == false ?
-      → bPerfectBlockUsed = true
-      → Broadcast OnPerfectBlock
-   return (Blocked, true, false)
+HandlePerfectBlock(HitPoint)                        【内部函数】BPC_Combat
+  ├─【1】退出格挡
+  │        → BPI_Attribute.ExitGuard()              【接口】
+  │        → BPI_ActionState.SetState(Locomotion)   【接口】
+  ├─【2】BPI_Combat.SetLastGuardEndTime(-9999)      【接口】清格挡 CD
+  ├─【3】OpenCounterWindow(Block)                   【内部函数】开格挡反击窗口
+  ├─【4】BPI_CombatFeedBack.PlayHitFeedback(        【接口】
+  │           Outcome = Blocked,
+  │           ImpactLocation = HitPoint,
+  │           bPerfect = true,                      ← 内部据此选 PerfectBlock 震动 + FOV 特写
+  │           OtherActor = None,                    ← 防守方拿不到攻击者，见下
+  │           BaseHitStop = 0)                      ← 顿帧不在这里做
+  └─【5】BPI_CombatFeedBack.PlayHitStop(Self, 0.04) 【接口】只停自己
 ```
 
-**判定层只做两件事：置 flag、广播。所有收尾动作都不在这一层。**
+**⭐ 第 1~3 步必须最先执行：玩家能不能立刻反击，优先级高于所有表现。表现晚 1 帧没人察觉，反击晚 1 帧会漏输入。**
 
-**`BPC_Combat` 绑了 `OnPerfectBlock`，`HandlePerfectBlock` 里做三件事：**
+### 顿帧：双方各停自己，不在同一处调
+
+**防守方拿不到攻击者的 `Actor`（`ReceiveDamage` 只传了攻击者的**位置**，没有传引用），所以 `PlayHitFeedback` 的 `OtherActor` 只能传 `None`，顿帧也交给双方各自处理：**
 
 ```
-HandlePerfectBlock()
-  ├─【1】退出格挡：调用 Player 的退出格挡接口（现有，不新增）
-  │        → Attribute.ExitGuard() → bIsGuarding = false
-  │        → SetState(Locomotion)
-  ├─【2】清格挡 CD：SetLastGuardEndTime(-9999)   ← 立刻可以再格挡
-  ├─【3】OpenCounterWindow(Block)                ← 打开格挡反击窗口
-  └─【4】震屏（E_CameraShakeType.PerfectBlock）+ 音效 + 顿帧
+防守方  BPC_Combat.HandlePerfectBlock      → PlayHitStop(Self, 0.04)
+攻击方  BPC_AttackTrace · bPerfectBlock    → PlayHitStop(Self, 0.04)
+         分支（命中返回值判定）
 ```
 
-**⭐ `OnPerfectBlock` 与 `OnPerfectDodge` 用同一个模式 —— 独立分发器、无参数、由 `BPC_Combat` 订阅。读代码的人不用记两套。**
+**两个各停 0.04s，视觉上就是双方同时卡住 0.04s。**
+
+| 方案 | 影响范围 | 问题 |
+| --- | --- | --- |
+| `SetGlobalTimeDilation` | 全场所有 Actor | 会影响 `Set Timer` 的游戏时间 → 反击窗口被拖长 |
+| **双方各调 `PlayHitStop(Self)`** | 只有交战双方 | 不波及第三方，可单独调 ✅ |
+
+**⚠️ 必须先确认 `PlayHitStop` 内部实现是「给传入的 Actor 设时间膨胀」。如果是「内部固定遍历全场敌人」，那 `PlayHitStop(Self, ...)` 会**静默无效**：玩家看起来根本没顿帧。**
+
+**⭐ `OnPerfectBlock` 与 `OnPerfectDodge` 用同一个模式 —— 独立分发器、由 `BPC_Combat` 订阅，不塞进 `OnDamageApplied`。**
 
 **⚠️ 完美格挡**不进入受击状态**：**
 
@@ -1761,20 +2021,46 @@ t = 0.00   按下格挡
 t = 0.10   敌人攻击命中
            └─ ReceiveDamage 第 ③ 条
                 ├─ 正面 ✅  Poise > 0 ✅  在 PerfectGuardWindow 内 ✅
-                ├─ bPerfectBlockUsed == false → 置 true → Broadcast OnPerfectBlock
+                ├─ bPerfectBlockUsed == false → 置 true → Broadcast OnPerfectBlock(HitPoint)
                 └─ Return (Blocked, true, false)
 
-           OnPerfectBlock → HandlePerfectBlock()
-                ├─ 退出格挡 → 回 Locomotion
-                ├─ SetLastGuardEndTime(-9999)      CD 清空
-                └─ OpenCounterWindow(Block)
+           OnPerfectBlock(HitPoint) → HandlePerfectBlock()
+                ├─【1】退出格挡 → 回 Locomotion
+                ├─【2】SetLastGuardEndTime(-9999)      CD 清空
+                ├─【3】OpenCounterWindow(Block)        窗口立刻开
+                ├─【4】PlayHitFeedback(Blocked, HitPoint, true, None, 0)
+                │        ├─ Shake(PerfectBlock, HitPoint, 2.0)   ← 强震屏
+                │        └─ PlayPerfectBlockCloseUp()            ← FOV 收窄开始
+                └─【5】PlayHitStop(Self, 0.04)                   ← 玩家顿帧
 
-t = 0.10   玩家已可自由操作
+           同时（攻击方侧，BPC_AttackTrace）
+                └─ 命中返回值 bPerfectBlock == true
+                     ├─ PlayHitStop(Self, 0.04)                  ← 敌人顿帧
+                     └─ 0.04s 后 PlayEnemySlowMo(0.15, 0.12)     ← 敌人慢速
+
+t = 0.10 ~ 0.14  ★ 顿帧：双方同时停住
+                 FOV 在这 0.04s 内从 BaseFOV 收到 BaseFOV−16
+t = 0.14   顿帧结束
+           ├─ 玩家恢复操作（顿帧期间按的攻击由输入缓冲接住）
+           ├─ 敌人进入 0.15 倍速
+           └─ FOV 保持收窄，再维持 0.06s
+t = 0.20   敌人慢速结束，恢复 1.0
+t = 0.20 ~ 0.45  FOV 平滑回位到 BaseFOV
 t = 0.10 ~ 0.90   ★ 格挡反击窗口
            按轻击 → BlockCounter_L1 → L2 → L3 → L4
            按重击 → BlockCounter_H1 → H2 → H3
 t = 0.90   CloseCounterWindow() → CounterType = None
 ```
+
+**⭐ 三个时间量的关系要记清：**
+
+| 量 | 区间 | 驱动 |
+| --- | --- | --- |
+| 顿帧 | `0.10 ~ 0.14` | `PlayHitStop` 的 `CustomTimeDilation` |
+| 敌人慢速 | `0.14 ~ 0.26` | `PlayEnemySlowMo(0.15, 0.12)` |
+| FOV 特写 | `0.10 ~ 0.45` | `PlayPerfectBlockCloseUp`（三段） |
+
+**⚠️ 顿帧和敌人慢速必须**串行**，不能同时开：同时开的话慢速期间的 `CustomTimeDilation` 又被顿帧覆盖，`0.12s` 的计时会被拖长到看不出效果。**
 
 **⭐ 窗口从**完美格挡那一刻**开始算（不是像闪避那样从收尾算）：**
 
@@ -1786,13 +2072,15 @@ t = 0.90   CloseCounterWindow() → CounterType = None
 
 #### （8）涉及变量与接口
 
+> **函数类型标注**：**【接口】** = 定义在 `BPI_xxx` 里，跨组件调用必须走它；**【接口实现】** = `BPC_xxx` 里实现某个 `BPI` 函数；**【内部函数】** = 组件自己的函数，外部不可调；**【事件】** = 分发器 / 自定义事件，不占接口计数；**【引擎 API】** = UE 自带节点。
+
 **`BPC_Attribute`：**
 
 | 名称 | 类型 | 说明 |
 | --- | --- | --- |
 | `bPerfectBlockUsed` | bool | `EnterGuard` 复位，一次格挡段只奖励一次 |
-| `OnPerfectBlock` | 分发器 | 判定成功时广播，无参数 |
-| `EnterGuard` / `ExitGuard` | 现有 | **内部逻辑不动** |
+| `OnPerfectBlock(Vector3)` | **【事件】** 分发器 | 判定成功时广播，参数为 `HitPoint` |
+| `EnterGuard` / `ExitGuard` | **【接口实现】** 现有 | 内部逻辑不动 |
 | `PerfectGuardWindow` | 现有 | 完美窗口长度 |
 
 **`BPC_Combat`：**
@@ -1803,20 +2091,50 @@ t = 0.90   CloseCounterWindow() → CounterType = None
 | `LastGuardEndTime` | float | -9999 |
 | `CounterType` | `E_CounterType` | 替代原 `bCounterWindowOpen` |
 | `CounterTypeUsed` | bool | 替代原 `bCounterUsed` |
-| `TryGuard()` | 内部函数 | 门槛 + 原流程 |
-| `SetLastGuardEndTime(Time)` | 接口实现 | 启动 / 清空格挡 CD |
-| `HandlePerfectBlock()` | 内部函数 | 退格挡 + 清 CD + 开窗 + 反馈 |
+| `TryGuard()` | **【内部函数】** | 门槛 + 原流程 |
+| `SetLastGuardEndTime(Time)` | **【接口实现】** | 启动 / 清空格挡 CD |
+| `HandlePerfectBlock(HitPoint)` | **【内部函数】** | 退格挡 + 清 CD + 开窗 + 顿帧 + 转发反馈 |
 
 **`BPI_Combat`：**
 
 | 方法名 | 输入 | 输出 | 作用 |
 | --- | --- | --- | --- |
-| `TryGuard` | / | bool | 格挡入口：状态判断 + CD 判断 + 原流程 |
-| `SetLastGuardEndTime` | float（Time） | / | 启动或清空格挡 CD（传 -9999 即清空） |
+| `TryGuard` | / | bool | **【接口】** 格挡入口：状态判断 + CD 判断 + 原流程 |
+| `SetLastGuardEndTime` | float（Time） | / | **【接口】** 启动或清空格挡 CD（传 -9999 即清空） |
+
+**`BPC_CameraDirector`（FOV 特写）：**
+
+| 名称 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `BaseFOV` | float | 0 | `BeginPlay` 从 `CameraComponent` 缓存一次 |
+| `CloseUpFOVDelta` | float | 16 | 收窄度数 |
+| `CloseUpInTime` | float | 0.04 | 收窄时长，与顿帧同步 |
+| `CloseUpHoldTime` | float | 0.06 | 保持时长 |
+| `CloseUpOutTime` | float | 0.25 | 回位时长 |
+| `CloseUpPhase` | `E_CloseUpPhase` | `None` | `None` 兼作空闲态，不需要额外 `bCloseUpActive` |
+| `CloseUpPhaseStartTime` | float | 0 | World 时间戳 |
+| `TargetFOV` | float | 0 | |
+
+**`BPI_CameraDirector`（本次新增 1 个）：**
+
+| 方法名 | 输入 | 输出 | 作用 |
+| --- | --- | --- | --- |
+| `PlayPerfectBlockCloseUp` | / | / | **【接口】** 完美格挡 FOV 特写：收窄 → 保持 → 回位 |
+
+**⭐ `PlayPerfectBlockCloseUp` 必须是【接口】而不是【内部函数】—— `BPC_CombatFeedBack` 要跨组件调用它，按分层约定跨组件调用必须走 `BPI_CameraDirector`。**
+
+**`BPI_CombatFeedBack`（已有，仅参数语义变更）：**
+
+| 方法名 | 输入 | 输出 | 变化 |
+| --- | --- | --- | --- |
+| `PlayEnemySlowMo` | float（Scale），float（Duration） | / | 原 `PlayPerfectDodgeSlowMo` 改名 + 加参数。**完美闪避传 (0.1, 0.5)，完美格挡传 (0.15, 0.12)** |
+| `PlayHitStop` | Actor，float | / | 现有。**只对传入的 Actor 生效 —— 防守方传 `Self`，攻击方也传 `Self`** |
 
 **`DT_Attacks`：** 新增 `BlockCounter_L1..L4` / `BlockCounter_H1..H3`（见（13）节的行表）。
 
 **`E_CounterType`：** 新建枚举，`None` / `Block` / `Dodge`。
+
+**`E_CloseUpPhase`：** 新建枚举，`None` / `In` / `Hold` / `Out`。
 
 **⭐ `E_CameraShakeType` 里已经有 `PerfectBlock` 与 `Block`，不需要新增。**
 
@@ -1844,15 +2162,20 @@ t = 0.90   CloseCounterWindow() → CounterType = None
 □ 挨打 / 死亡 / 重新闪避 / 跳跃 → 窗口关闭
 
 【接口数】
-□ BPI_Combat 7 → 9（TryGuard / SetLastGuardEndTime），总数 95 → 97
+□ BPI_Combat 7 → 9（TryGuard / SetLastGuardEndTime）
+□ BPI_CameraDirector 1 → 2（PlayPerfectBlockCloseUp）
+□ 总数 95 → 98
 ```
 
-#### （10）四个最容易写错的点
+#### （10）六个最容易写错的点
 
 ```
 ① OnPerfectBlock 必须独立于 OnDamageApplied
    OnDamageApplied 的参数里没有 bPerfectBlock（第三个 bool 是轻重等级）
-   不要为了省一个分发器去改它的签名 —— 所有绑定点都要跟着动
+   不要为了省一个分发器去塞进它的签名 —— 所有绑定点都要跟着动
+   但 OnPerfectBlock 自己的签名已从「无参数」改为 Vector3(HitPoint)
+   ⚠️ 改分发器签名后旧绑定静默断开，不报错，只表现为「反馈全部消失」
+   改完必须进 BPC_Combat.BeginPlay 确认绑定线还在
 
 ② 完美格挡不要走 EnterHit
    走了就会锁在受击动画里，反击窗口等于白送
@@ -1863,6 +2186,275 @@ t = 0.90   CloseCounterWindow() → CounterType = None
 
 ④ LastGuardEndTime 只能通过 SetLastGuardEndTime 修改
    BPC_Attribute 不该反向依赖 Player 特有的 BPC_Combat
+
+⑤ 顿帧不要用 SetGlobalTimeDilation，双方各调 PlayHitStop(Self)
+   GlobalTimeDilation 会拖慢 Set Timer 的游戏时间 → 反击窗口被拉长
+   且会一并冻住远处敌人的动画、粒子、音效
+
+⑥ PlayPerfectBlockCloseUp 必须是【接口】不是【内部函数】
+   BPC_CombatFeedBack 跨组件调用它，按分层约定必须走 BPI_CameraDirector
+```
+
+#### （11）反馈：震屏 + FOV 特写
+
+> **范围**：本节只写**震屏**与**FOV 特写**两项。火花 / 音效 / 后处理爆闪 / 敌人被弹开 / 手柄震动暂不设计 —— 等这两项的手感确认之后再补，否则一次改太多分不清是哪个起的作用。
+
+##### 设计原则：和完美闪避彻底分开
+
+```
+完美闪避 = "我从时间里溜走了"  → 时间被拉长，画面变冷，人闪走了
+完美格挡 = "我把你的攻击撞回去了" → 时间不变，空间被压缩，人站住了
+```
+
+| 维度 | 完美闪避 | 完美格挡 |
+| --- | --- | --- |
+| 核心感知 | 时间变慢 | **空间撞击** |
+| 时间处理 | 长慢动作 `0.5s` | 极短 `0.12s`（只弹住敌人） |
+| 镜头 | 轻震，慢频率 | **强震 + FOV 收窄特写** |
+| 震屏资产 | `BPCS_PerfectDodge` | `BPCS_PerfectBlock` |
+
+**⭐ 所以完美格挡的全部反馈都应该是「短、硬、有方向」，绝不能加慢动作长尾 —— 那是闪避的语言。**
+
+##### 11.1 震屏：改 `BPCS_PerfectBlock`
+
+**资产内确认是 `CameraShakeBase` + `PerlinNoiseCameraShakePattern`。**
+
+**Perlin 模式的参数单位必须记清：**
+
+```
+Location  Amplitude → 厘米
+Rotation  Amplitude → 度
+FOV       Amplitude → 度
+```
+
+**⚠️ Perlin 的 `Amplitude` 是**单值**，Location 的 X/Y/Z 用同一振幅（三个不同噪声通道，方向随机）。想给 Yaw / Pitch 不同振幅，Perlin 做不到，必须换 Legacy Camera Shake。**
+
+| 参数 | 值 | 理由 |
+| --- | --- | --- |
+| `Duration` | `0.20` | 短促，超过 0.3 就变"晃" |
+| `BlendInTime` | `0.00` | **必须 0**，第 0 帧就是满振幅 |
+| `BlendOutTime` | `0.18` | 几乎全程衰减，接近冲击型 |
+| `Location.Amplitude` | `1.2` | **基准值**，实际由 Scale 放大 |
+| `Location.Frequency` | `15` | 中高频，抖得密 |
+| `Rotation.Amplitude` | `0.8` | **基准值** |
+| `Rotation.Frequency` | `12` | 比位置稍慢，避免"抽搐" |
+| `FOV.Amplitude` | `0` | 不用 Perlin 做 FOV，交给 `PlayPerfectBlockCloseUp` 的三阶段插值精确控制 |
+
+**⭐⭐ 现在震动"不够大"，最可能的原因不是振幅小，而是 `BlendInTime` 有值：**
+
+```
+BlendInTime = 0      → 第 0 帧就是满振幅           ← 冲击型必须这样
+BlendInTime > 0      → 振幅从 0 慢慢涨上来          ← 只适合持续型震动
+```
+
+**完美格挡的感知窗口只有 0.1s 左右，`BlendInTime` 只要有值，大半时间都在渐入 —— 等于振幅白配。**
+
+**⭐ 频率不是越低越"重"：**
+
+```
+1~5 Hz    缓慢摇晃，像坐船 → 晕，但不"重"
+10~20 Hz  明显抖动        → 撞击感       ← 这里
+30 Hz+    细密震颤，像手机 → 不"重"
+```
+
+**撞击感来自「大振幅 + 快速衰减 + 中高频」，不是低频。**
+
+**⭐ 最终震动强度是「三层相乘」，调的时候只改一层：**
+
+```
+最终振幅 = 资产内 Amplitude × Shake_Multiplier × Shake 的 Strength 参数
+```
+
+```
+资产 Amplitude    配基准（1.2 / 0.8）
+Shake_Multiplier  保持 1.0
+只调 Strength 参数    完美格挡 2.0，普通格挡 1.0
+```
+
+**⚠️ 不要把振幅直接配到最大再传 Scale 2.5 —— 那样实际是 7.5cm，会晕。超过 3.5 基本必晕。**
+
+**⚠️ `BPCS_PerfectDodge` 已从原 `BPCS_Perfect` 拆分出来，但参数暂不调整 —— 现在沿用拆分时的默认值，与 `BPCS_PerfectBlock` 尚未拉开差异，等格挡手感确认之后再改。**
+
+##### 11.2 FOV 特写：新增 `PlayPerfectBlockCloseUp`【接口】
+
+**为什么 FOV 特写比单纯震屏有效：**
+
+```
+震屏   = 相机"抖"   → 幅度上的冲击
+FOV 收窄 = 视野"聚焦" → 空间上的压迫感
+
+两者叠加 = "这一击把世界压缩了"
+而且和顿帧天然咬合：顿帧让时间停住，FOV 让空间收拢
+两个维度同时"收紧"，比单独任何一个都强
+```
+
+**参数：**
+
+| 参数 | 值 | 说明 |
+| --- | --- | --- |
+| `BaseFOV` | 运行时读取 | `BeginPlay` 从 `CameraComponent` 缓存一次 |
+| `CloseUpFOVDelta` | `16` | 收窄度数 |
+| `CloseUpInTime` | `0.04` | 和顿帧同步，快速收拢 |
+| `CloseUpHoldTime` | `0.06` | 保持 |
+| `CloseUpOutTime` | `0.25` | 平滑回位 |
+| 总时长 | `0.35` | |
+
+**⚠️ 收窄幅度：**
+
+```
+10 度   有感觉但不明显
+16 度   明显特写，不晕        ← 这里
+20 度   开始有压迫感，部分人会晕
+25 度+  晕，且视野太窄，看不到其他敌人
+```
+
+**⚠️ 总时长不能超过 0.4s —— 特写期间视野变小，看不到侧后方的攻击。**
+
+**实现位置：`BPC_CameraDirector`（ActorComponent）。**
+
+**⚠️ ActorComponent 蓝图里不能用 Timeline 节点：**
+
+```
+Blueprint 的 Timeline 节点依赖 UTimelineComponent 作为成员
+而 Add Component(Timeline) 只在 Actor 蓝图里提供
+→ ActorComponent / SceneComponent 蓝图里右键搜不到 Timeline
+
+替代方案：TickComponent 手动插值
+（Set Timer by Event 在 ActorComponent 里是可用的，所以顿帧 / 慢动作的恢复不受影响）
+```
+
+**`PlayPerfectBlockCloseUp()`【接口实现】：**
+
+```
+PlayPerfectBlockCloseUp()
+  ├─【1】Branch: CloseUpPhase != None → Return        ← 防重入
+  ├─【2】TargetFOV = BaseFOV − CloseUpFOVDelta
+  ├─【3】CloseUpPhase = In
+  └─【4】CloseUpPhaseStartTime = Get Game Time in Seconds
+```
+
+**`TickComponent` 三阶段插值：**
+
+```
+TickComponent(DeltaTime)
+  └─ Branch: CloseUpPhase == None → Return
+     │
+     ├─ Now = Get Game Time in Seconds                 【引擎 API】
+     ├─ Elapsed = Now − CloseUpPhaseStartTime
+     │
+     └─ Switch on E_CloseUpPhase
+        ├─ In:
+        │    ├─ Alpha = Saturate(Elapsed / CloseUpInTime)
+        │    ├─ CameraRef → Set Field of View(Lerp(BaseFOV, TargetFOV, Alpha))   【引擎 API】
+        │    └─ Branch: Alpha >= 1.0 → CloseUpPhase = Hold，StartTime = Now
+        │
+        ├─ Hold:
+        │    ├─ CameraRef → Set Field of View(TargetFOV)
+        │    └─ Branch: Elapsed >= CloseUpHoldTime → CloseUpPhase = Out，StartTime = Now
+        │
+        └─ Out:
+             ├─ Alpha = Saturate(Elapsed / CloseUpOutTime)
+             ├─ CameraRef → Set Field of View(Lerp(TargetFOV, BaseFOV, Alpha))
+             └─ Branch: Alpha >= 1.0
+                  ├─ CameraRef → Set Field of View(BaseFOV)     ← 必须显式回位
+                  └─ CloseUpPhase = None
+```
+
+**⭐⭐ 必须用 `Get Game Time in Seconds`，不能用 Tick 的 `DeltaTime` 累加：**
+
+```
+完美格挡会 PlayHitStop(Self, 0.04)
+  → 玩家 Actor 的 CustomTimeDilation 被设成 0
+  → 挂在玩家身上的 BPC_CameraDirector 的 TickComponent 的 DeltaTime 也变 0
+  → 如果 Elapsed += DeltaTime，顿帧的 0.04s 里 Elapsed 完全不增长
+  → FOV 收窄被"冻住"，顿帧结束后才开始收
+  → 结果：先抖一下，然后才拉近 —— 冲击感全散
+```
+
+| 时间源 | 受 `GlobalTimeDilation` | 受 `CustomTimeDilation` | 能用吗 |
+| --- | --- | --- | --- |
+| `DeltaTime`（Tick 入参） | 受影响 | **受影响** | ❌ |
+| `Get Game Time in Seconds` | 受影响 | **不受影响** | ✅ |
+| `Get Real Time Seconds` | 不受影响 | 不受影响 | ✅ 也可用 |
+
+**⭐ `CustomTimeDilation` 只作用于单个 Actor，不影响 `UWorld::GetTimeSeconds()`。所以用 World 时间戳做差，顿帧期间 FOV 照常收窄 —— 这才是"同时开始"的感觉。**
+
+**⚠️ 如果将来改用 `GlobalTimeDilation` 做顿帧，`Get Game Time in Seconds` 也会被拖慢，那时必须换成 `Get Real Time Seconds`。**
+
+**⚠️ `Out` 阶段结束必须显式 `Set Field of View(BaseFOV)`：靠 Lerp 到 1.0 理论值相同，但浮点残差会在连续触发几十次后看出来。**
+
+**`BeginPlay` 缓存：**
+
+```
+BeginPlay
+  ├─ CameraRef = BPI_Player.GetCameraComponent()          【接口】
+  └─ BaseFOV   = CameraRef → Field of View               【引擎 API】
+```
+
+**⚠️ 不能在 `TickComponent` 里读"当前 FOV"当起点 —— 连续两次完美格挡，第二次的起点已经是 74 了，会越收越小。**
+
+##### 11.3 触发链路
+
+```
+BPC_CombatFeedBack · PlayHitFeedback 【接口实现】
+  └─ Branch: bPerfect == true
+       ├─ BPI_CameraDirector.Shake(PerfectBlock, ImpactLocation, 2.0)      【接口】
+       └─ BPI_CameraDirector.PlayPerfectBlockCloseUp()                     【接口】
+
+BPC_Combat · HandlePerfectBlock(HitPoint) 【内部函数】
+  └─ BPI_CombatFeedBack.PlayHitFeedback(Blocked, HitPoint, true, None, 0)  【接口】
+```
+
+**⭐ `ImpactLocation` 传 `HitPoint` 而不是角色位置 —— 震屏会朝接触点方向偏，有"来向感"。**
+
+##### 11.4 验证
+
+```
+【震屏】
+□ 完美格挡第 0 帧就有明显位移（BlendInTime = 0 生效）
+□ 0.20s 内衰减到 0，不是突然停
+□ 有旋转感，不只是平移
+□ Shake_Multiplier 保持 1.0，强度只靠 Strength 参数调
+□ 强度 2.0 不晕，3.5 是上限
+
+【FOV 特写】
+□ 特写和顿帧同时开始（顿帧期间 FOV 仍在收窄）
+□ 从 BaseFOV 收到 BaseFOV−16，再平滑回到 BaseFOV
+□ 连续三次完美格挡，FOV 不会越收越小
+□ 特写结束后 FOV 精确回到 BaseFOV（打印对比）
+□ 特写期间能看到侧后方（视野没被压太窄）
+□ 特写 + 震屏叠加不晕
+□ BPC_CameraDirector / BPC_Combat / BPC_Attribute 里没有任何 Timeline 节点
+
+【分层】
+□ Combat 只调 PlayHitFeedback，没直接碰 CameraDirector
+□ bPerfect == false 时走 BPCS_Block，没有特写
+□ PlayPerfectBlockCloseUp 定义在 BPI_CameraDirector 里
+```
+
+##### 11.5 三个最容易写错的点
+
+```
+① BaseFOV 必须在 BeginPlay 读一次并缓存
+   TickComponent 里读当前 FOV 当起点 → 连续触发会越收越小
+
+② CloseUpPhase 的 None 兼作空闲态，不要再加 bCloseUpActive
+   两个变量表达同一个状态，只要有一条路径忘了同步就会分叉，且不报错
+
+③ 时间源必须用 Get Game Time in Seconds
+   用 DeltaTime 累加的话，顿帧期间 FOV 被冻住
+   → 先抖一下再拉近，冲击感全散
+```
+
+##### 11.6 暂不设计（等这两项确认手感后再补）
+
+```
+□ 火花 / 冲击波 Niagara（沿格挡面法线，生成在 HitPoint）
+□ 三层音效（金属撞击 + Sub 低频 + 混响尾，音高随机 ±5%）
+□ 后处理爆闪（Bloom / Exposure / ChromaticAberration）
+□ 敌人被弹开（Parried 蒙太奇 + 位移 + 0.3s 僵直，由攻击方执行）
+□ 手柄震动（左右马达时长不同）
+□ BPCS_PerfectDodge 参数调整（已拆分出来，暂沿用默认值）
 ```
 
 ---
@@ -2430,7 +3022,8 @@ Move To 的 Blackboard Key 选 TargetActor
 | 25  | 武器刀光                        | 攻击蒙太奇没有统一的刀光开关              | 新增 `M_WeaponTrail` / `NS_WeaponTrail` / `ANS_WeaponTrail`；通过 `BPI_WeaponBase.SetTrailActive(bool)` 控制 Niagara Ribbon，接口总数 94 → 95 |
 | 26  | 攻击令牌                        | 文档 3.6 要求「同屏 1~2 个敌人同时进攻」，工程内无实现 | `BPI_GameState` 接入 `AddToken` / `RemoveToken` / `HasToken`；`Tokens` 用 `Map<Actor, Float>` 记录持有时刻；`BTT_EnemyAttack` 申请、`BPC_AttackTrace` 归还、`BP_GameState` 三层兜底；`BPI_CharacterBase` 新增 `IsCharacterDead`，接口总数 95 → 96 |
 | 27  | 敌我阵营 + AI 分层重构             | 无阵营概念，敌人会互相误伤；AI 每帧 `ComputeNextState` 直接覆盖状态，攻击中被切走导致「一边跑一边砍」 | 新增 `E_Team` 与 `BPI_Attribute.GetTeam`、`BPI_CharacterBase.IsHostile`；`BPI_AI` 12 → 9，删除 `AI_AddPerceivedActor` / `AI_RemovePerceivedActor` / `AI_RefreshTarget` / `HandleDamageApplied`（转内部方法）、`AI_ResetAIState`（无引用），`AI_SetAIState` 改名 `AI_SetState`，新增 `AI_TryEnterState` / `AI_ReturnToInitialState`；决策权移到已接入的 `BTS_UpdateAIState`，`BPC_AI` 退化为仲裁器；Chase 使用行为树内置 `BTTask_MoveTo`，目标键为 `TargetActor`；接口总数 96 → 95 |
-| 28  | 完美格挡                        | 完美格挡只停留在 `ReceiveDamage` 的返回值，没有任何后续奖励；格挡没有冷却，可以无限重进 | 新增 `8，功能实现 · 3）完美格挡` 整节；`E_CounterType` 取代 `bCounterWindowOpen`（`None` / `Block` / `Dodge`，Dodge 优先级更高），`CounterTypeUsed` 取代 `bCounterUsed`；`BPC_Attribute` 新增 `bPerfectBlockUsed` 与 `OnPerfectBlock` 分发器；`BPC_Combat` 新增 `GuardCD` / `LastGuardEndTime` / `TryGuard` / `SetLastGuardEndTime` / `HandlePerfectBlock`，`OpenCounterWindow` 改收 `E_CounterType`；`DT_Attacks` 新增 `BlockCounter_L1..L4` / `BlockCounter_H1..H3`；接口总数 95 → 97（`BPI_Combat` 7 → 9）；**普通格挡受击（`Blocked` 非完美）的表现与状态处理尚未定稿，本节不含** |
+| 28  | 完美格挡                        | 完美格挡只停留在 `ReceiveDamage` 的返回值，没有任何后续奖励；格挡没有冷却，可以无限重进 | 新增 `8，功能实现 · 3）完美格挡` 整节；`E_CounterType` 取代 `bCounterWindowOpen`（`None` / `Block` / `Dodge`，Dodge 优先级更高），`CounterTypeUsed` 取代 `bCounterUsed`；`BPC_Attribute` 新增 `bPerfectBlockUsed` 与 `OnPerfectBlock` 分发器；`BPC_Combat` 新增 `GuardCD` / `LastGuardEndTime` / `TryGuard` / `SetLastGuardEndTime` / `HandlePerfectBlock`，`OpenCounterWindow` 改收 `E_CounterType`；`DT_Attacks` 新增 `BlockCounter_L1..L4` / `BlockCounter_H1..H3`；接口总数 95 → 98（`BPI_Combat` 7 → 9、`BPI_CameraDirector` 1 → 2）；**普通格挡受击（`Blocked` 非完美）的表现与状态处理尚未定稿，本节不含** |
+| 29  | 完美格挡的反馈                  | 完美格挡只有震屏，且不够大；`ReceiveDamage` 拿不到击中点；`PlayHitStop` 只对传入的攻击者生效，做不到"双方都停"；完美闪避与完美格挡共用一个抖动资产 | `ReceiveDamage` 新增 `HitPoint` 入参（第三个仍是攻击者位置 —— 判定用位置、表现用击中点，不能互相替代）；`OnPerfectBlock` 改为带 `Vector3`；`PlayPerfectDodgeSlowMo` 改名 `PlayEnemySlowMo(Scale, Duration)`（闪避 0.1/0.5，格挡 0.15/0.12）；顿帧改为双方各调 `PlayHitStop(Self, 0.04)`，明确不用 `GlobalTimeDilation`（会拖慢 `Set Timer` 导致反击窗口变长）；新增 `BPI_CameraDirector.PlayPerfectBlockCloseUp`（FOV 特写 `BaseFOV−16`，`TickComponent` 三阶段插值，**用 `Get Game Time in Seconds` 而非 `DeltaTime`** 规避顿帧冻结）；新增 `E_CloseUpPhase`（`None` 兼作空闲态，不再需要 `bCloseUpActive`）；`E_CameraShakeType` 补 `PerfectDodge`（共 6 个，文档此前漏写）；`BPCS_PerfectBlock` 参数改为冲击型（`BlendInTime = 0`），`BPCS_PerfectDodge` 已拆分但参数暂不调；接口总数仍为 98 |
 
 ### 需要在编辑器里处理的遗留问题
 
@@ -2485,6 +3078,18 @@ Move To 的 Blackboard Key 选 TargetActor
 ⑪ BPC_AttackTrace 的 TraceStart / TraceEnd / TraceColor 是伤害判定
    不是调试绘制，与玩家侧判定同源
    → 判定框可视化调试工具仍然缺失，这是调招式数据时的主要盲区
+
+⑫ ActorComponent 蓝图里不能用 Timeline 节点
+   Blueprint 的 Timeline 依赖 UTimelineComponent 作为成员，
+   而 Add Component(Timeline) 只在 Actor 蓝图里提供
+   → BPC_Combat / BPC_CameraDirector / BPC_Attribute / BPC_Motor
+     等组件里右键搜不到 Timeline
+   → 组件内需要插值的一律用 TickComponent 手动推进
+     （Set Timer by Event 在组件里可用，顿帧 / 慢动作的恢复不受影响）
+
+   ⚠ 组件内做主插值时，时间源要用 Get Game Time in Seconds，
+     不能用 Tick 的 DeltaTime 累加 —— 顿帧会把该 Actor 的
+     DeltaTime 压到 0，插值会被冻住
 ```
 
 ---
