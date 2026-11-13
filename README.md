@@ -150,7 +150,7 @@
 | **【事件】** | 分发器 / 自定义事件 | ❌ |
 | **【引擎 API】** | UE 自带节点 | ❌ |
 
-**⭐ 「接口数 98」只统计【接口】，其余三类都不计。**
+**⭐ 「接口数 97」只统计【接口】，其余三类都不计。**
 
 ### 3）组件实现约束
 
@@ -262,12 +262,12 @@
 | BPI_BufferInput          | Player/Component/BufferInput       | 3   | BPC_BufferInput    |
 | BPI_CameraDirector       | Player/Component/CameraDirector    | 2   | BPC_CameraDirector |
 | BPI_Combat               | Player/Component/Combat            | 9   | BPC_Combat         |
-| BPI_LockOn               | Player/Component/LockOn            | 6   | BPC_LockOn         |
+| BPI_LockOn               | Player/Component/LockOn            | 5   | BPC_LockOn         |
 | BPI_EnemyBase            | Enemy                              | 2   | BP_EnemyBase       |
 | BPI_AttackTrace          | Enemy/Component/AttackTrace        | 3   | BPC_AttackTrace    |
 | BPI_AI                   | Enemy/Component/AI                 | 9   | BPC_AI             |
 
-合计 98 个接口函数。
+合计 97 个接口函数。
 
 ---
 
@@ -573,8 +573,7 @@ SetState         不用判断   —— 复位收尾
 
 | 方法名              | 输入  | 输出            | 作用        |
 | ---------------- | --- | ------------- | --------- |
-| GetFocusTarget   | /   | Actor         | 获取当前锁定的对象 |
-| GetTarget        | /   | Actor         | 获取候选/当前目标 |
+| GetFocusTarget   | /   | Actor         | 获取当前焦点目标（已并入原 `GetTarget` 的候选目标逻辑） |
 | GetLockState     | /   | E_LockOnState | 获取当前锁定状态  |
 | HardLockPress    | /   | /             | 硬锁键按下     |
 | HardLockRelease  | /   | /             | 硬锁键松开     |
@@ -2162,9 +2161,8 @@ t = 0.90   CloseCounterWindow() → CounterType = None
 □ 挨打 / 死亡 / 重新闪避 / 跳跃 → 窗口关闭
 
 【接口数】
-□ BPI_Combat 7 → 9（TryGuard / SetLastGuardEndTime）
-□ BPI_CameraDirector 1 → 2（PlayPerfectBlockCloseUp）
-□ 总数 95 → 98
+□ 本次新增 3 个：BPI_Combat +2（TryGuard / SetLastGuardEndTime）、BPI_CameraDirector +1（PlayPerfectBlockCloseUp）
+□ 当前总数以「0，接口总览」为准
 ```
 
 #### （10）六个最容易写错的点
@@ -3003,7 +3001,7 @@ Move To 的 Blackboard Key 选 TargetActor
 | 6   | BPI_Player                    | 14 个函数                           | **实际 9 个**：`GetMesh` / `GetHitBox` / `GetWeapon` / `GetAttributeComponent` / `GetCharacterMovement` 已上收到 `BPI_CharacterBase` |
 | 7   | BPI_EnemyBase                 | 5 个函数                            | **实际 2 个**：`GetMesh` / `GetHitBox` / `GetEnemyAttributeComponent` 已上收到 `BPI_CharacterBase`                                   |
 | 8   | BPI_AI                        | 7 个函数                            | 实际 9 个，补 `AI_SetAIState` / `HandleDamageApplied`（后续受击逻辑又扩到 12 个，见 #18）                                                          |
-| 9   | BPI_LockOn                    | 5 个函数                            | 实际 6 个，补 `GetTarget`                                                                                                         |
+| 9   | BPI_LockOn                    | 5 个函数                            | 实际 6 个，补 `GetTarget`（后 `GetTarget` 并入 `GetFocusTarget`，降回 5 个，见 #30）                                                        |
 | 10  | BPI_Combat                    | 7 个函数                            | **实际 7 个**：**没有** `ClearAttackData`；`MoveStart` / `MoveEnd` 已删除（位移改由 `ANS_Move` 直连 Motor）；新增 `EnterHit`                      |
 | 11  | E_AIState                     | 4 个值                             | 实际 7 个，补 `HitLight` / `HitHeavy` / `KnockDown`                                                                               |
 | 12  | ST_AttackData                 | 写作 `PoiseDamageRate`             | 资产里是 `PoiseDdamageRate`（多一个 d）                                                                                               |
@@ -3024,6 +3022,7 @@ Move To 的 Blackboard Key 选 TargetActor
 | 27  | 敌我阵营 + AI 分层重构             | 无阵营概念，敌人会互相误伤；AI 每帧 `ComputeNextState` 直接覆盖状态，攻击中被切走导致「一边跑一边砍」 | 新增 `E_Team` 与 `BPI_Attribute.GetTeam`、`BPI_CharacterBase.IsHostile`；`BPI_AI` 12 → 9，删除 `AI_AddPerceivedActor` / `AI_RemovePerceivedActor` / `AI_RefreshTarget` / `HandleDamageApplied`（转内部方法）、`AI_ResetAIState`（无引用），`AI_SetAIState` 改名 `AI_SetState`，新增 `AI_TryEnterState` / `AI_ReturnToInitialState`；决策权移到已接入的 `BTS_UpdateAIState`，`BPC_AI` 退化为仲裁器；Chase 使用行为树内置 `BTTask_MoveTo`，目标键为 `TargetActor`；接口总数 96 → 95 |
 | 28  | 完美格挡                        | 完美格挡只停留在 `ReceiveDamage` 的返回值，没有任何后续奖励；格挡没有冷却，可以无限重进 | 新增 `8，功能实现 · 3）完美格挡` 整节；`E_CounterType` 取代 `bCounterWindowOpen`（`None` / `Block` / `Dodge`，Dodge 优先级更高），`CounterTypeUsed` 取代 `bCounterUsed`；`BPC_Attribute` 新增 `bPerfectBlockUsed` 与 `OnPerfectBlock` 分发器；`BPC_Combat` 新增 `GuardCD` / `LastGuardEndTime` / `TryGuard` / `SetLastGuardEndTime` / `HandlePerfectBlock`，`OpenCounterWindow` 改收 `E_CounterType`；`DT_Attacks` 新增 `BlockCounter_L1..L4` / `BlockCounter_H1..H3`；接口总数 95 → 98（`BPI_Combat` 7 → 9、`BPI_CameraDirector` 1 → 2）；**普通格挡受击（`Blocked` 非完美）的表现与状态处理尚未定稿，本节不含** |
 | 29  | 完美格挡的反馈                  | 完美格挡只有震屏，且不够大；`ReceiveDamage` 拿不到击中点；`PlayHitStop` 只对传入的攻击者生效，做不到"双方都停"；完美闪避与完美格挡共用一个抖动资产 | `ReceiveDamage` 新增 `HitPoint` 入参（第三个仍是攻击者位置 —— 判定用位置、表现用击中点，不能互相替代）；`OnPerfectBlock` 改为带 `Vector3`；`PlayPerfectDodgeSlowMo` 改名 `PlayEnemySlowMo(Scale, Duration)`（闪避 0.1/0.5，格挡 0.15/0.12）；顿帧改为双方各调 `PlayHitStop(Self, 0.04)`，明确不用 `GlobalTimeDilation`（会拖慢 `Set Timer` 导致反击窗口变长）；新增 `BPI_CameraDirector.PlayPerfectBlockCloseUp`（FOV 特写 `BaseFOV−16`，`TickComponent` 三阶段插值，**用 `Get Game Time in Seconds` 而非 `DeltaTime`** 规避顿帧冻结）；新增 `E_CloseUpPhase`（`None` 兼作空闲态，不再需要 `bCloseUpActive`）；`E_CameraShakeType` 补 `PerfectDodge`（共 6 个，文档此前漏写）；`BPCS_PerfectBlock` 参数改为冲击型（`BlendInTime = 0`），`BPCS_PerfectDodge` 已拆分但参数暂不调；接口总数仍为 98 |
+| 30  | BPI_LockOn.GetTarget          | 文档与实际都列有该函数，`GetFocusTarget` 与 `GetTarget` 并存 | 实际已删除，内容并入 `GetFocusTarget`（锁定中返回锁定对象，未锁定时返回候选）；`BPI_LockOn` 6 → 5，接口总数 98 → 97 |
 
 ### 需要在编辑器里处理的遗留问题
 
