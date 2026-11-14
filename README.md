@@ -37,6 +37,7 @@
 | 2026.11.09 | 枚举归位 | `E_Team` 迁至 CharacterBase 枚举 | 作者 |
 | 2026.11.10 | 完美格挡 | 完美格挡判定、格挡 CD、`Block` 反击窗口 | 作者 |
 | 2026.11.13 | 格挡反馈增强 | `ReceiveDamage` 加 `HitPoint`；顿帧改双方各停；`BPCS_Perfect` 拆分重命名为 `BPCS_PerfectBlock` 并新建 `BPCS_PerfectDodge`；`BPI_CameraDirector` 新增 FOV 特写接口（`BPC_CameraDirector` 侧已实现，**尚未接入 `CombatFeedBack`**） | 作者 |
+| 2026.11.13 | 完美格挡与反击 | 补充完美格挡实施进度表与（12）完美格挡反击小节；`BPI_CombatFeedBack` 4 → 6（新增 `PlayPerfectDodgeStartSound` / `PlayPerfectBlockSound`），结束音转为【内部函数】由开始音计时；`BlockCounter_*` 实际只有 `H1`，轻击四段与 `H2/H3` 待补 | 作者 |
 
 ---
 
@@ -151,7 +152,7 @@
 | **【事件】** | 分发器 / 自定义事件 | ❌ |
 | **【引擎 API】** | UE 自带节点 | ❌ |
 
-**⭐ 「接口数 97」只统计【接口】，其余三类都不计。**
+**⭐ 「接口数 99」只统计【接口】，其余三类都不计。**
 
 ### 3）组件实现约束
 
@@ -185,6 +186,16 @@
 
 ④ 顿帧与慢速必须串行，不能同时开
    同时开的话慢速期间的时间膨胀被顿帧覆盖，慢速时长会被拉长
+
+⑤ 「开始 / 结束」两段式的机制，收尾一律由发起方计时，不单独开接口
+   PlayEnemySlowMo(Scale, Duration)       → Timer → RestoreSlowMo()
+   PlayPerfectDodgeStartSound(Duration)    → Timer → PlayPerfectDodgeEndSound()
+   收尾函数做成【内部函数】，不暴露到 BPI
+   → 外部只需要「发起」，不需要也拿不到「收尾」
+
+⑥ 音效接口与时间接口分离，一个接口只做一件事
+   PlayEnemySlowMo 只管时间膨胀，不播任何音效
+   → 否则共用它的另一个机制（完美格挡）会误播别人的音效
 ```
 
 ### 5）位移与冲量
@@ -254,7 +265,7 @@
 | ------------------------ | ---------------------------------- | --- | ------------------ |
 | BPI_CharacterBase        | Code/Interface                     | 10  | 无（纯接口，所有组件获取的统一入口） |
 | BPI_Attribute            | Code/ActorComponent/Attribute      | 15  | BPC_Attribute      |
-| BPI_CombatFeedBack       | Code/ActorComponent/CombatFeedBack | 4   | BPC_CombatFeedBack |
+| BPI_CombatFeedBack       | Code/ActorComponent/CombatFeedBack | 6   | BPC_CombatFeedBack |
 | BPI_Motor                | Code/ActorComponent/Motor          | 9   | BPC_Motor          |
 | BPI_WeaponBase           | Code/Weapon                        | 3   | BP_WeaponBase      |
 | BPI_GameState            | Code/GameState                     | 3   | 待接入                |
@@ -268,7 +279,7 @@
 | BPI_AttackTrace          | Enemy/Component/AttackTrace        | 3   | BPC_AttackTrace    |
 | BPI_AI                   | Enemy/Component/AI                 | 9   | BPC_AI             |
 
-合计 97 个接口函数。
+合计 99 个接口函数。
 
 ---
 
@@ -374,7 +385,42 @@ HitPoint   → 判断「打在哪里」       → 决定火花生成在哪里
 | PlayHitFeedback | E_HitOutCome（Outcome），Vector3（ImpactLocation），bool（bPerfect），Actor（OtherActor），float（BaseHitStop） | /   | 播放命中音效、顿帧、屏幕抖动                                |
 | PlayHitStop     | Actor，float                                   | /   | 根据命中者与时长播放顿帧                                  |
 | EndHitStop      | /                                             | /   | 离开顿帧                                          |
-| PlayEnemySlowMo | float（Scale），float（Duration） | /   | 按倍率与时长放慢全场敌人（自带恢复计时）。**完美闪避传 (0.1, 0.5)，完美格挡传 (0.15, 0.12)** |
+| PlayEnemySlowMo | float（Scale），float（Duration） | /   | **只放慢全场敌人，不播任何音效**（自带恢复计时）。完美闪避传 (0.1, 0.5)，完美格挡传 (0.15, 0.12) |
+| PlayPerfectDodgeStartSound | float（Duration）                  | /   | 播放完美闪避开始音，并在 **Duration 后自动播结束音**（内部计时，见下） |
+| PlayPerfectBlockSound | /                                     | /   | 播放完美格挡撞击音（单一瞬态，无尾音计时）                |
+
+**音效接口与慢动作接口是分离的两组，不能合并：**
+
+```
+完美闪避：PlayPerfectDodgeStartSound(0.5) + PlayEnemySlowMo(0.1, 0.5)
+完美格挡：PlayPerfectBlockSound()          + PlayEnemySlowMo(0.15, 0.12)
+
+⚠️ 如果音效写在 PlayEnemySlowMo 内部，完美格挡调用慢动作时会误播闪避音效
+```
+
+**`BPC_CombatFeedBack` 内部的音效收尾（不对外暴露）：**
+
+| 名称 | 归属 | 说明 |
+| --- | --- | --- |
+| `PlayPerfectDodgeEndSound()` | **【内部函数】** | 由 `PlayPerfectDodgeStartSound` 的计时器触发，播结束音 |
+| `PlayPerfectDodgeEndSound` | 变量 | 结束音资产 |
+| `PerfectDodgeEndSoundVolume` | 变量 | 结束音音量 |
+| `PerfectDodgeSoundTimer` | 变量 | 开始音 → 结束音的计时器句柄 |
+| `PerfectBlockSound` | 变量 | 完美格挡撞击音资产 |
+
+**⭐ 结束音不做成接口，理由和 `RestoreSlowMo` 一样 —— 它是「开始动作的收尾」，由发起方自己计时，外部不需要也**不能**直接调：**
+
+```
+PlayPerfectDodgeStartSound(Duration) 【接口实现】
+  ├─【1】Clear and Invalidate Timer(PerfectDodgeSoundTimer)   ← 防叠加
+  ├─【2】Spawn Sound 2D: PerfectDodgeStartSound
+  └─【3】Set Timer by Event(Duration → PlayPerfectDodgeEndSound)
+
+PlayPerfectDodgeEndSound() 【内部函数】
+  └─ Spawn Sound 2D: PerfectDodgeEndSound（Volume = PerfectDodgeEndSoundVolume）
+```
+
+**⚠️ 第 1 步不能省：连续两次完美闪避时，第一次的结束音会和第二次的开始音叠在一起。这和 `PlayEnemySlowMo` 里「先 RestoreSlowMo 再重启」是同一个道理。**
 
 #### （4）BPI_Motor
 
@@ -1201,13 +1247,24 @@ ReceiveDamage 的 ② 条：
 `BPC_Combat` 绑了 `OnPerfectDodge`，`HandlePerfectDodge` 只施加效果、不做收尾：
 
 ```
-① CameraDirector.Shake(PerfectDodge)          震屏
-② 音效
-③ CombatFeedBack.PlayEnemySlowMo(0.1, 0.5)    只慢敌人（0.1 倍 × 0.5s）
+① CameraDirector.Shake(PerfectDodge)          震屏                      【接口】
+② CombatFeedBack.PlayPerfectDodgeStartSound(0.5)  开始音，0.5s 后自动播结束音  【接口】
+③ CombatFeedBack.PlayEnemySlowMo(0.1, 0.5)    只慢敌人（0.1 倍 × 0.5s）   【接口】
 ④ Motor.SetMotionScale(0.3)                   位移衰减，控距离
 ⑤ bPerfectDodgePending = true
    Set Timer(PerfectDodgeCancelDelay → TryFinishPerfectDodge)
 ```
+
+**⭐ 第 ② ③ 两步是**两个独立接口**，不能合并：**
+
+```
+PlayPerfectDodgeStartSound(0.5) → 影音层：开始音 + 内部计时 → 0.5s 后播结束音
+PlayEnemySlowMo(0.1, 0.5)       → 时间层：只调敌人的 CustomTimeDilation
+
+两者的 0.5 必须一致 → 结束音正好落在慢动作恢复的那一刻
+```
+
+**⚠️ 音效不能写在 `PlayEnemySlowMo` 内部：完美格挡也调它，会误播闪避音效。**
 
 **为什么不立即取消动画：**
 
@@ -1813,9 +1870,25 @@ DoJump                → CloseCounterWindow()    跳跃也是重开动作
 
 ### 3）完美格挡
 
-> **状态：设计已定稿，实现进行中。**
+> **状态：判定链已跑通，反馈与反击部分完成（详见下表）。**
 >
 > **⚠️ 本节只写完美格挡。普通格挡受击（`Blocked` 非完美）的表现与状态处理尚未完善，不在此列。**
+
+**实施进度总览：**
+
+| 环节 | 状态 | 位置 |
+| --- | --- | --- |
+| 判定（格挡 + 正面 + `Poise > 0` + 完美窗口） | ✅ 已实现 | `ReceiveDamage` 第 ③ 条 |
+| 防重复 `bPerfectBlockUsed` | ✅ 已实现 | `BPC_Attribute` |
+| 判定后收尾（退格挡 / 回 Locomotion / 清 CD / 开窗口） | ✅ 已实现 | `HandlePerfectBlock`（4）的第 1~3 步 |
+| 格挡入口门槛（`TryGuard` + CD） | ✅ 已实现 | （6） |
+| 顿帧 0.04s（双方各停） | ✅ 已实现 | 双方各调 `PlayHitStop(Self, 0.04)` |
+| 敌人慢速 `PlayEnemySlowMo(0.15, 0.12)` | ✅ 已实现 | （4）第 5 步 |
+| 完美格挡撞击音 `PlayPerfectBlockSound()` | ✅ 已实现 | 独立接口，不复用闪避音效 |
+| 强震屏 `Shake(PerfectBlock, HitPoint, 2.0)` | ✅ 已实现 | （11.1） |
+| FOV 特写 `PlayPerfectBlockCloseUp()` | ⚠️ 接口已实现，**尚未接入 `PlayHitFeedback`** | （11.3） |
+| 完美格挡反击 `BlockCounter_*` | ⚠️ **部分完成，需优化** | （12） |
+| 火花 / 后处理爆闪 / 敌人被弹开 / 手柄震动 | ⬜ 未开始 | （11.6） |
 
 #### （1）完美格挡与完美闪避的定位差别
 
@@ -2125,14 +2198,27 @@ t = 0.90   CloseCounterWindow() → CounterType = None
 
 **⭐ `PlayPerfectBlockCloseUp` 必须是【接口】而不是【内部函数】—— `BPC_CombatFeedBack` 要跨组件调用它，按分层约定跨组件调用必须走 `BPI_CameraDirector`。**
 
-**`BPI_CombatFeedBack`（已有，仅参数语义变更）：**
+**`BPI_CombatFeedBack`（已有，本次新增 2 个）：**
 
 | 方法名 | 输入 | 输出 | 变化 |
 | --- | --- | --- | --- |
-| `PlayEnemySlowMo` | float（Scale），float（Duration） | / | 原 `PlayPerfectDodgeSlowMo` 改名 + 加参数。**完美闪避传 (0.1, 0.5)，完美格挡传 (0.15, 0.12)** |
+| `PlayEnemySlowMo` | float（Scale），float（Duration） | / | 原 `PlayPerfectDodgeSlowMo` 改名 + 加参数。**完美闪避传 (0.1, 0.5)，完美格挡传 (0.15, 0.12)**。**音效已移出，只调时间膨胀** |
 | `PlayHitStop` | Actor，float | / | 现有。**只对传入的 Actor 生效 —— 防守方传 `Self`，攻击方也传 `Self`** |
+| `PlayPerfectDodgeStartSound` | float（Duration） | / | **【接口】新增**。播开始音 + 内部计时 → Duration 后自动播结束音 |
+| `PlayPerfectBlockSound` | / | / | **【接口】新增**。完美格挡撞击音，单一瞬态 |
 
-**`DT_Attacks`：** 新增 `BlockCounter_L1..L4` / `BlockCounter_H1..H3`（见（13）节的行表）。
+**`BPC_CombatFeedBack` 的音效变量与内部函数：**
+
+| 名称 | 类型 | 说明 |
+| --- | --- | --- |
+| `PerfectDodgeStartSound` | `USoundBase` | 完美闪避开始音 |
+| `PerfectDodgeEndSound` | `USoundBase` | 完美闪避结束音 |
+| `PerfectDodgeEndSoundVolume` | float | 结束音音量 |
+| `PerfectDodgeSoundTimer` | Timer Handle | 开始音 → 结束音的计时器 |
+| `PerfectBlockSound` | `USoundBase` | 完美格挡撞击音 |
+| `PlayPerfectDodgeEndSound()` | **【内部函数】** | 计时器回调，播结束音 |
+
+**`DT_Attacks`：** 计划新增 `BlockCounter_L1..L4` / `BlockCounter_H1..H3`；**实际当前只有 `BlockCounter_H1`，补齐清单见（12.2）**。
 
 **`E_CounterType`：** 新建枚举，`None` / `Block` / `Dodge`。
 
@@ -2198,9 +2284,9 @@ t = 0.90   CloseCounterWindow() → CounterType = None
 
 #### （11）反馈：震屏 + FOV 特写
 
-> **范围**：本节只写**震屏**与**FOV 特写**两项。火花 / 音效 / 后处理爆闪 / 敌人被弹开 / 手柄震动暂不设计 —— 等这两项的手感确认之后再补，否则一次改太多分不清是哪个起的作用。
+> **范围**：本节只写**震屏**、**音效**与**FOV 特写**三项。火花 / 后处理爆闪 / 敌人被弹开 / 手柄震动暂不设计 —— 等这三项的手感确认之后再补，否则一次改太多分不清是哪个起的作用。
 >
-> **进度**：`BPC_CameraDirector` 的 FOV 特写（接口 + 实现 + 变量）**已完成**；`BPC_CombatFeedBack` 的接入**尚未开始** —— 函数在编辑器里手动调用能看到效果，但游戏流程里还走不到。详见下文【11.3 触发链路与当前进度】。
+> **进度**：震屏 ✅ 已接入；撞击音 ✅ 已接入（`PlayPerfectBlockSound`）；FOV 特写 ⚠️ `BPC_CameraDirector` 侧已实现，**`BPC_CombatFeedBack` 的接入尚未开始**。详见下文【11.3 触发链路与当前进度】。
 
 ##### 设计原则：和完美闪避彻底分开
 
@@ -2416,35 +2502,35 @@ BPC_Combat · HandlePerfectBlock(HitPoint) 【内部函数】
 | --- | --- | --- |
 | `BPI_CameraDirector.PlayPerfectBlockCloseUp`（接口声明） | `BPI_CameraDirector` | ✅ 已完成 |
 | `PlayPerfectBlockCloseUp` 实现 + `TickComponent` 三阶段插值 | `BPC_CameraDirector` | ✅ 已完成 |
-| `BaseFOV` / `CloseUpFOVDelta` / `CloseUpInTime` / `CloseUpHoldTime` / `CloseUpOutTime` / `CloseUpPhase` / `CloseUpPhaseStartTime` / `TargetFOV` | `BPC_CameraDirector` | ✅ 已完成 |
+| 8 个 `CloseUp*` / `BaseFOV` 变量 | `BPC_CameraDirector` | ✅ 已完成 |
 | `BeginPlay` 缓存 `BaseFOV` | `BPC_CameraDirector` | ✅ 已完成 |
-| `PlayHitFeedback` 的 `bPerfect == true` 分支 | `BPC_CombatFeedBack` | ⬜ **未接入** |
-| `HandlePerfectBlock` 调 `PlayHitFeedback(..., true, ...)` | `BPC_Combat` | ⬜ 未接入 |
-| `PlayHitStop(Self, 0.04)` 玩家侧顿帧 | `BPC_Combat` | ⬜ 未接入 |
+| `PlayPerfectBlockSound()`（撞击音） | `BPC_CombatFeedBack` | ✅ **已接入** |
+| `PlayEnemySlowMo(0.15, 0.12)` | `BPC_CombatFeedBack` | ✅ **已接入** |
+| `PlayHitStop` 双方各停 0.04s | `BPC_Combat` / `BPC_AttackTrace` | ✅ **已接入** |
+| `Shake(PerfectBlock, HitPoint, 2.0)` | `BPC_CombatFeedBack` | ✅ **已接入** |
+| `PlayHitFeedback` 的 `bPerfect == true` 分支调 `PlayPerfectBlockCloseUp()` | `BPC_CombatFeedBack` | ⬜ **唯一剩余项** |
 
-**⚠️ 当前因为 `CombatFeedBack` 还没接入，完美格挡**不会**触发 FOV 特写：**
-
-```
-函数已经在编辑器里可调，手动触发能看到完整的「收窄 → 保持 → 回位」
-但 HandlePerfectBlock 还只做到「退出格挡 + 清 CD + 开窗口」三步
-→ 游戏流程里走不到 PlayPerfectBlockCloseUp
-```
-
-**⭐ 接入时只需要两处改动，`BPC_CameraDirector` 侧不用再动：**
+**⚠️ 当前因为 `CombatFeedBack` 还没接 FOV 特写，完美格挡能看到震动、听到撞击音、敌人会慢下来，但**画面不会拉近**：**
 
 ```
-① BPC_CombatFeedBack · PlayHitFeedback 【接口实现】
-   Branch bPerfect == true →
-     ├─ BPI_CameraDirector.Shake(PerfectBlock, ImpactLocation, 2.0)
-     └─ BPI_CameraDirector.PlayPerfectBlockCloseUp()
+PlayPerfectBlockCloseUp 已在编辑器里可调，手动触发能看到完整的「收窄 → 保持 → 回位」
+但 PlayHitFeedback 的 bPerfect 分支里还没调它
+→ 游戏流程里走不到
+```
 
-② BPC_Combat · HandlePerfectBlock 【内部函数】
-   末尾加 PlayHitFeedback(Blocked, HitPoint, true, None, 0)
+**⭐ 接入时只需要一处改动，`BPC_CameraDirector` 与 `BPC_Combat` 侧都不用再动：**
+
+```
+BPC_CombatFeedBack · PlayHitFeedback 【接口实现】
+  Branch bPerfect == true →
+    ├─ BPI_CameraDirector.Shake(PerfectBlock, ImpactLocation, 2.0)      ← 已有
+    ├─ BPI_CameraDirector.PlayPerfectBlockCloseUp()                     ← 唯一要补的
+    └─（PlayPerfectBlockSound 若已在此处，不要重复调用）
 ```
 
 ##### 11.4 验证
 
-> **⚠️ 下表的 FOV 特写部分要等 11.3 的两处接入完成才跑得通。在那之前只能在 `BPC_CameraDirector` 里手动调 `PlayPerfectBlockCloseUp`，验证函数本身的行为（收窄 → 保持 → 回位、连续调用不越收越小）。**
+> **⚠️ 下表的 FOV 特写部分要等 11.3 的接入完成才跑得通。在那之前只能在 `BPC_CameraDirector` 里手动调 `PlayPerfectBlockCloseUp`，验证函数本身的行为（收窄 → 保持 → 回位、连续调用不越收越小）。**
 
 ```
 【震屏】
@@ -2453,6 +2539,11 @@ BPC_Combat · HandlePerfectBlock(HitPoint) 【内部函数】
 □ 有旋转感，不只是平移
 □ Shake_Multiplier 保持 1.0，强度只靠 Strength 参数调
 □ 强度 2.0 不晕，3.5 是上限
+
+【音效】
+□ 完美格挡播的是撞击音，不是完美闪避的开始音
+□ 连续两次完美格挡，音高略有不同（Pitch 随机生效）
+□ 完美格挡不播完美闪避的结束音
 
 【FOV 特写】
 □ 特写和顿帧同时开始（顿帧期间 FOV 仍在收窄）
@@ -2483,16 +2574,102 @@ BPC_Combat · HandlePerfectBlock(HitPoint) 【内部函数】
    → 先抖一下再拉近，冲击感全散
 ```
 
-##### 11.6 暂不设计（等这两项确认手感后再补）
+##### 11.6 暂不设计（等手感确认后再补）
 
 ```
 □ 火花 / 冲击波 Niagara（沿格挡面法线，生成在 HitPoint）
-□ 三层音效（金属撞击 + Sub 低频 + 混响尾，音高随机 ±5%）
+□ 三层音效的细化（当前是单一撞击音，Sub 低频与混响尾未做）
 □ 后处理爆闪（Bloom / Exposure / ChromaticAberration）
 □ 敌人被弹开（Parried 蒙太奇 + 位移 + 0.3s 僵直，由攻击方执行）
 □ 手柄震动（左右马达时长不同）
 □ BPCS_PerfectDodge 参数调整（已拆分出来，暂沿用默认值）
 ```
+
+#### （12）完美格挡反击：部分完成，需优化
+
+> **状态：链路已跑通（能开窗、能打出 `BlockCounter_H1`），但数据只配了一段，需要补齐与调优。**
+
+##### 12.1 当前实际状态
+
+**`E_CounterType.Block` 开窗之后，`GetAttackRowPrefix` 返回 `BlockCounter_`，拼上行号去 `DT_Attacks` 查。**
+
+**`DT_Attacks` 里现有的反击行（实际扫描结果）：**
+
+| 前缀 | 轻击 | 重击 | 归属 |
+| --- | --- | --- | --- |
+| `Counter_*` | `Counter_L1` ~ `Counter_L4` ✅ 齐全 | `Counter_H1` ~ `Counter_H3` ✅ 齐全 | 完美闪避反击 |
+| `BlockCounter_*` | **`BlockCounter_L1`~`L4` ❌ 全部缺失** | **只有 `BlockCounter_H1` ⚠️，缺 `H2` / `H3`** | 完美格挡反击 |
+
+**⭐ 结论：**
+
+```
+完美格挡后按重击 → 能打出 BlockCounter_H1，但第二三段断开
+完美格挡后按轻击 → 找不到行，行为待确认（可能回落到 Attack / 无反应）
+```
+
+**⚠️ 轻击四段全缺，这是当前最影响手感的问题 —— 玩家习惯用轻击试探，格挡后按轻击没反应会被直接感知为 bug。**
+
+##### 12.2 补齐清单
+
+| 要补的行 | 段数 | 说明 |
+| --- | --- | --- |
+| `BlockCounter_L1` ~ `L4` | 4 | 对齐 `Counter_L1..L4` 的段数与 `Next` 链 |
+| `BlockCounter_H2` / `H3` | 2 | 对齐 `Counter_H1..H3` |
+
+**每行最少要填的字段（与 `Counter_*` 保持同构）：**
+
+```
+Montage + SectionStart   格挡反击的蒙太奇段
+Next                     下一段行名，末段留空
+CancelStart              取消窗口起点
+MotionSelf               位移（格挡反击应比闪避反击更小，人站住不动）
+DamageScale / PoiseScale 伤害与削轫
+```
+
+**⭐ `Next` 链必须首尾相接：`L1→L2→L3→L4`、`H1→H2→H3`，末段为空。漏一环就会出现「打到第二段就断」。**
+
+##### 12.3 需要优化的点
+
+```
+① 轻击四段全缺（P0）
+   补齐 BlockCounter_L1~L4，否则格挡后按轻击无反馈
+
+② 重击缺 H2 / H3（P0）
+   BlockCounter_H1 的 Next 指向不存在的行 → 连招断在第一段
+
+③ 位移量尚未区分（P1）
+   完美闪避反击自带位移（人闪走了），格挡反击是原地站稳
+   MotionSelf 应该显著小于 Counter_*，甚至为 0
+
+④ 段数与闪避反击不对称（P2）
+   闪避反击 轻 4 + 重 3 = 7 行；格挡反击目前 1 行
+   补齐后建议也是 轻 4 + 重 3，保持两套反击的节奏预期一致
+
+⑤ 命中反馈未区分（P2）
+   格挡反击应该更"重"：更强震屏 + 更重的受击音
+   目前沿用的是普通攻击的反馈
+```
+
+##### 12.4 验证顺序
+
+```
+① 完美格挡 → 按轻击 → 逐段确认 L1→L2→L3→L4 都能打出
+② 完美格挡 → 按重击 → 确认 H1→H2→H3
+③ 窗口过期后按攻击 → 回落 Attack1（不是 BlockCounter）
+④ 完美格挡 → 按轻击 → 再按重击 → 确认不会混链
+⑤ 敌人三连击全完美格挡 → 只触发一次开窗（bPerfectBlockUsed）
+```
+
+##### 12.5 兜底行为待确认
+
+**行名找不到时 `GetAttackRowPrefix` 的返回值，目前文档未记录。** 建议明确两条之一：
+
+```
+方案 A：找不到行 → 回落到 Attack1（玩家至少能出招，不"卡住"）
+方案 B：找不到行 → 不出招，但打 Print Warning（开发期暴露问题）
+```
+
+**⭐ 开发期用 B，发布前改 A。这样缺行不会被静默吞掉。**
 
 ---
 
@@ -3062,6 +3239,8 @@ Move To 的 Blackboard Key 选 TargetActor
 | 28  | 完美格挡                        | 完美格挡只停留在 `ReceiveDamage` 的返回值，没有任何后续奖励；格挡没有冷却，可以无限重进 | 新增 `8，功能实现 · 3）完美格挡` 整节；`E_CounterType` 取代 `bCounterWindowOpen`（`None` / `Block` / `Dodge`，Dodge 优先级更高），`CounterTypeUsed` 取代 `bCounterUsed`；`BPC_Attribute` 新增 `bPerfectBlockUsed` 与 `OnPerfectBlock` 分发器；`BPC_Combat` 新增 `GuardCD` / `LastGuardEndTime` / `TryGuard` / `SetLastGuardEndTime` / `HandlePerfectBlock`，`OpenCounterWindow` 改收 `E_CounterType`；`DT_Attacks` 新增 `BlockCounter_L1..L4` / `BlockCounter_H1..H3`；接口总数 95 → 98（`BPI_Combat` 7 → 9、`BPI_CameraDirector` 1 → 2）；**普通格挡受击（`Blocked` 非完美）的表现与状态处理尚未定稿，本节不含** |
 | 29  | 完美格挡的反馈                  | 完美格挡只有震屏，且不够大；`ReceiveDamage` 拿不到击中点；`PlayHitStop` 只对传入的攻击者生效，做不到"双方都停"；完美闪避与完美格挡共用一个抖动资产 | `ReceiveDamage` 新增 `HitPoint` 入参（第三个仍是攻击者位置 —— 判定用位置、表现用击中点，不能互相替代）；`OnPerfectBlock` 改为带 `Vector3`；`PlayPerfectDodgeSlowMo` 改名 `PlayEnemySlowMo(Scale, Duration)`（闪避 0.1/0.5，格挡 0.15/0.12）；顿帧改为双方各调 `PlayHitStop(Self, 0.04)`，明确不用 `GlobalTimeDilation`（会拖慢 `Set Timer` 导致反击窗口变长）；新增 `BPI_CameraDirector.PlayPerfectBlockCloseUp`（FOV 特写 `BaseFOV−16`，`TickComponent` 三阶段插值，**用 `Get Game Time in Seconds` 而非 `DeltaTime`** 规避顿帧冻结）；新增 `E_CloseUpPhase`（`None` 兼作空闲态，不再需要 `bCloseUpActive`）；`E_CameraShakeType` 补 `PerfectDodge`（共 6 个，文档此前漏写）；`BPCS_PerfectBlock` 参数改为冲击型（`BlendInTime = 0`），`BPCS_PerfectDodge` 已拆分但参数暂不调；接口总数仍为 98 |
 | 30  | BPI_LockOn.GetTarget          | 文档与实际都列有该函数，`GetFocusTarget` 与 `GetTarget` 并存 | 实际已删除，内容并入 `GetFocusTarget`（锁定中返回锁定对象，未锁定时返回候选）；`BPI_LockOn` 6 → 5，接口总数 98 → 97 |
+| 31  | BPI_CombatFeedBack            | 4 个函数；`PlayEnemySlowMo` 内部播完美闪避音效 | 实际 6 个：新增 `PlayPerfectDodgeStartSound(Duration)` / `PlayPerfectBlockSound`；**音效已从 `PlayEnemySlowMo` 移出**，慢动作接口只调时间膨胀；结束音 `PlayPerfectDodgeEndSound` 为【内部函数】由开始音的计时器触发；接口总数 97 → 99 |
+| 32  | DT_Attacks 的 BlockCounter_*  | 文档写 `BlockCounter_L1..L4` / `BlockCounter_H1..H3`（7 行） | **实际只有 `BlockCounter_H1`**：轻击 `L1~L4` 全缺、重击缺 `H2/H3`；完美闪避反击的 `Counter_L1~L4` / `Counter_H1~H3` 齐全。补齐清单见 8-3（12） |
 
 ### 需要在编辑器里处理的遗留问题
 
