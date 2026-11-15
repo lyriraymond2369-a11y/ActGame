@@ -36,7 +36,7 @@
 | 2026.11.08 | AI 重构 | 敌人 AI 状态流重构，接入阵营系统 | 作者 |
 | 2026.11.09 | 枚举归位 | `E_Team` 迁至 CharacterBase 枚举 | 作者 |
 | 2026.11.10 | 完美格挡 | 完美格挡判定、格挡 CD、`Block` 反击窗口 | 作者 |
-| 2026.11.13 | 格挡反馈增强 | `ReceiveDamage` 加 `HitPoint`；顿帧改双方各停；`BPCS_Perfect` 拆分重命名为 `BPCS_PerfectBlock` 并新建 `BPCS_PerfectDodge`；`BPI_CameraDirector` 新增 FOV 特写接口（`BPC_CameraDirector` 侧已实现，**尚未接入 `CombatFeedBack`**） | 作者 |
+| 2026.11.13 | 格挡反馈增强 | `ReceiveDamage` 加 `HitPoint`；顿帧改双方各停；`BPCS_Perfect` 拆分重命名为 `BPCS_PerfectBlock` 并新建 `BPCS_PerfectDodge`；`BPI_CameraDirector` 新增 FOV 特写接口，并已接入 `PlayHitFeedback` 的 `bPerfect` 分支（震屏 + 音效 + FOV 三项反馈全部打通） | 作者 |
 | 2026.11.13 | 完美格挡与反击 | 补充完美格挡实施进度表与（12）完美格挡反击小节；`BPI_CombatFeedBack` 4 → 6（新增 `PlayPerfectDodgeStartSound` / `PlayPerfectBlockSound`），结束音转为【内部函数】由开始音计时；`BlockCounter_*` 实际只有 `H1`，轻击四段与 `H2/H3` 待补 | 作者 |
 
 ---
@@ -1870,7 +1870,7 @@ DoJump                → CloseCounterWindow()    跳跃也是重开动作
 
 ### 3）完美格挡
 
-> **状态：判定链已跑通，反馈与反击部分完成（详见下表）。**
+> **状态：判定链与反馈已完整（震动 / 音效 / FOV 特写全部接入）；完美格挡反击部分完成（详见（12））。**
 >
 > **⚠️ 本节只写完美格挡。普通格挡受击（`Blocked` 非完美）的表现与状态处理尚未完善，不在此列。**
 
@@ -1886,7 +1886,7 @@ DoJump                → CloseCounterWindow()    跳跃也是重开动作
 | 敌人慢速 `PlayEnemySlowMo(0.15, 0.12)` | ✅ 已实现 | （4）第 5 步 |
 | 完美格挡撞击音 `PlayPerfectBlockSound()` | ✅ 已实现 | 独立接口，不复用闪避音效 |
 | 强震屏 `Shake(PerfectBlock, HitPoint, 2.0)` | ✅ 已实现 | （11.1） |
-| FOV 特写 `PlayPerfectBlockCloseUp()` | ⚠️ 接口已实现，**尚未接入 `PlayHitFeedback`** | （11.3） |
+| FOV 特写 `PlayPerfectBlockCloseUp()` | ✅ 已接入 `PlayHitFeedback` 的 `bPerfect` 分支 | （11.3） |
 | 完美格挡反击 `BlockCounter_*` | ⚠️ **部分完成，需优化** | （12） |
 | 火花 / 后处理爆闪 / 敌人被弹开 / 手柄震动 | ⬜ 未开始 | （11.6） |
 
@@ -2024,7 +2024,7 @@ HandlePerfectBlock(HitPoint)                        【内部函数】BPC_Combat
 → 所以 HandlePerfectBlock 里直接回 Locomotion，不走 EnterHit
 ```
 
-**📌 当前进度：第 1~3 步已实现，第 4~5 步（反馈转发与玩家侧顿帧）尚未接入 —— 见下文（11.3）的进度表。**
+**📌 当前进度：第 1~5 步已全部实现 —— 反馈转发与玩家侧顿帧均已接入。**
 
 #### （5）格挡 CD：为什么需要，加在哪
 
@@ -2286,7 +2286,7 @@ t = 0.90   CloseCounterWindow() → CounterType = None
 
 > **范围**：本节只写**震屏**、**音效**与**FOV 特写**三项。火花 / 后处理爆闪 / 敌人被弹开 / 手柄震动暂不设计 —— 等这三项的手感确认之后再补，否则一次改太多分不清是哪个起的作用。
 >
-> **进度**：震屏 ✅ 已接入；撞击音 ✅ 已接入（`PlayPerfectBlockSound`）；FOV 特写 ⚠️ `BPC_CameraDirector` 侧已实现，**`BPC_CombatFeedBack` 的接入尚未开始**。详见下文【11.3 触发链路与当前进度】。
+> **进度**：震屏 ✅ 已接入；撞击音 ✅ 已接入（`PlayPerfectBlockSound`）；FOV 特写 ✅ 已接入 `PlayHitFeedback` 的 `bPerfect` 分支 —— 三项反馈已全部打通。详见下文【11.3 触发链路与当前进度】。
 
 ##### 设计原则：和完美闪避彻底分开
 
@@ -2484,14 +2484,16 @@ BeginPlay
 
 ##### 11.3 触发链路与当前进度
 
-**目标链路：**
+**实际链路（已打通）：**
 
 ```
 BPC_Combat · HandlePerfectBlock(HitPoint) 【内部函数】
-  └─ BPI_CombatFeedBack.PlayHitFeedback(Blocked, HitPoint, true, None, 0)  【接口】
-       └─ Branch: bPerfect == true
-            ├─ BPI_CameraDirector.Shake(PerfectBlock, ImpactLocation, 2.0)      【接口】
-            └─ BPI_CameraDirector.PlayPerfectBlockCloseUp()                     【接口】
+  ├─ BPI_CombatFeedBack.PlayHitFeedback(Blocked, HitPoint, true, None, 0)  【接口】
+  │    └─ Branch: bPerfect == true
+  │         ├─ BPI_CameraDirector.Shake(PerfectBlock, ImpactLocation, 2.0)      【接口】
+  │         ├─ BPI_CameraDirector.PlayPerfectBlockCloseUp()                     【接口】
+  │         └─ BPI_CombatFeedBack.PlayPerfectBlockSound()                       【接口】
+  └─ BPI_CombatFeedBack.PlayHitStop(Self, 0.04)                                 【接口】
 ```
 
 **⭐ `ImpactLocation` 传 `HitPoint` 而不是角色位置 —— 震屏会朝接触点方向偏，有"来向感"。**
@@ -2504,33 +2506,25 @@ BPC_Combat · HandlePerfectBlock(HitPoint) 【内部函数】
 | `PlayPerfectBlockCloseUp` 实现 + `TickComponent` 三阶段插值 | `BPC_CameraDirector` | ✅ 已完成 |
 | 8 个 `CloseUp*` / `BaseFOV` 变量 | `BPC_CameraDirector` | ✅ 已完成 |
 | `BeginPlay` 缓存 `BaseFOV` | `BPC_CameraDirector` | ✅ 已完成 |
-| `PlayPerfectBlockSound()`（撞击音） | `BPC_CombatFeedBack` | ✅ **已接入** |
-| `PlayEnemySlowMo(0.15, 0.12)` | `BPC_CombatFeedBack` | ✅ **已接入** |
-| `PlayHitStop` 双方各停 0.04s | `BPC_Combat` / `BPC_AttackTrace` | ✅ **已接入** |
-| `Shake(PerfectBlock, HitPoint, 2.0)` | `BPC_CombatFeedBack` | ✅ **已接入** |
-| `PlayHitFeedback` 的 `bPerfect == true` 分支调 `PlayPerfectBlockCloseUp()` | `BPC_CombatFeedBack` | ⬜ **唯一剩余项** |
+| `PlayPerfectBlockSound()`（撞击音） | `BPC_CombatFeedBack` | ✅ 已接入 |
+| `PlayEnemySlowMo(0.15, 0.12)` | `BPC_CombatFeedBack` | ✅ 已接入 |
+| `PlayHitStop` 双方各停 0.04s | `BPC_Combat` / `BPC_AttackTrace` | ✅ 已接入 |
+| `Shake(PerfectBlock, HitPoint, 2.0)` | `BPC_CombatFeedBack` | ✅ 已接入 |
+| `PlayHitFeedback` 的 `bPerfect == true` 分支调 `PlayPerfectBlockCloseUp()` | `BPC_CombatFeedBack` | ✅ **已接入** |
 
-**⚠️ 当前因为 `CombatFeedBack` 还没接 FOV 特写，完美格挡能看到震动、听到撞击音、敌人会慢下来，但**画面不会拉近**：**
-
-```
-PlayPerfectBlockCloseUp 已在编辑器里可调，手动触发能看到完整的「收窄 → 保持 → 回位」
-但 PlayHitFeedback 的 bPerfect 分支里还没调它
-→ 游戏流程里走不到
-```
-
-**⭐ 接入时只需要一处改动，`BPC_CameraDirector` 与 `BPC_Combat` 侧都不用再动：**
+**⭐ 完美格挡的三项反馈已全部打通：震动、撞击音、FOV 特写，与顿帧 / 敌人慢速同步发生。**
 
 ```
-BPC_CombatFeedBack · PlayHitFeedback 【接口实现】
-  Branch bPerfect == true →
-    ├─ BPI_CameraDirector.Shake(PerfectBlock, ImpactLocation, 2.0)      ← 已有
-    ├─ BPI_CameraDirector.PlayPerfectBlockCloseUp()                     ← 唯一要补的
-    └─（PlayPerfectBlockSound 若已在此处，不要重复调用）
+t = 0.10  判定成功
+          ├─ 强震屏（第 0 帧满振幅）
+          ├─ 撞击音（第 0 帧）
+          ├─ FOV 收窄开始（0.04s 内收到 BaseFOV−16）
+          └─ 双方顿帧 0.04s（FOV 在顿帧期间照常收窄，因为用的是 World 时间）
 ```
 
 ##### 11.4 验证
 
-> **⚠️ 下表的 FOV 特写部分要等 11.3 的接入完成才跑得通。在那之前只能在 `BPC_CameraDirector` 里手动调 `PlayPerfectBlockCloseUp`，验证函数本身的行为（收窄 → 保持 → 回位、连续调用不越收越小）。**
+> **⚠️ 三项反馈已全部接入，下表可以直接在游戏里跑。**
 
 ```
 【震屏】
