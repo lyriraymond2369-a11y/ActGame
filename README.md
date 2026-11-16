@@ -38,6 +38,8 @@
 | 2026.11.10 | 完美格挡 | 完美格挡判定、格挡 CD、`Block` 反击窗口 | 作者 |
 | 2026.11.13 | 格挡反馈增强 | `ReceiveDamage` 加 `HitPoint`；顿帧改双方各停；`BPCS_Perfect` 拆分重命名为 `BPCS_PerfectBlock` 并新建 `BPCS_PerfectDodge`；`BPI_CameraDirector` 新增 FOV 特写接口，并已接入 `PlayHitFeedback` 的 `bPerfect` 分支（震屏 + 音效 + FOV 三项反馈全部打通） | 作者 |
 | 2026.11.13 | 完美格挡与反击 | 补充完美格挡实施进度表与（12）完美格挡反击小节；`BPI_CombatFeedBack` 4 → 6（新增 `PlayPerfectDodgeStartSound` / `PlayPerfectBlockSound`），结束音转为【内部函数】由开始音计时；`BlockCounter_*` 实际只有 `H1`，轻击四段与 `H2/H3` 待补 | 作者 |
+| 2026.11.14 | 完美格挡反击数据表 | `DT_Attacks` 补齐 `BlockCounter_L1~L2 / H1~H2` 四行，`Montage_BlockCounter` 蒙太奇已建，格挡反击轻 2 + 重 2 = 4 行，与闪避反击轻 4 + 重 3 有意区分 | 作者 |
+| 2026.11.14 | 攻击后摇取消与破韧精简 | `CanTransitionTo` 加 `bCanCancel` 判断，无后续连招时攻击后摇可被输入取消；删除 `bPoiseBroken` 成员变量，`ReceiveDamage` 直通 `TakeDamage` 的破韧返回并作为 `IsBroken` 输出（三个输出变四个） | 作者 |
 
 ---
 
@@ -89,6 +91,7 @@
     - [5）动作位移：水平与垂直冲量必须分开处理](#5动作位移水平与垂直冲量必须分开处理) —— 近身撞人时上挑被吞的原因
     - [6）刀光：Niagara 条带拖尾](#6刀光niagara-条带拖尾) —— 为什么不用静态弧面、条带的三条硬设置
     - [7）攻击令牌：同屏进攻名额](#7攻击令牌同屏进攻名额) —— 四道守卫、三层兜底、永远留一个在外围
+    - [8）攻击后摇取消](#8攻击后摇取消无后续连招时) —— CanTransitionTo 加 bCanCancel 判断，无连招时后摇可被输入取消
 - [9，运行导图](#9运行导图) —— 组件之间的实际流转
     - [1）玩家运行导图](#1玩家运行导图) —— 输入到伤害
     - [2）敌人运行导图](#2敌人运行导图) —— 感知到伤害
@@ -225,6 +228,10 @@
    bGuardOnCooldown = (Now - LastGuardEndTime) < GuardCD
    → 不存 bGuardOnCooldown 本身
 
+   项目实例：bPoiseBroken 已删除
+   ReceiveDamage 直接透传 TakeDamage 的返回值（IsBroken 输出）
+   → 韧性扣除与破韧判断都在函数内部，成员变量只写不读就是死重量
+
 ③ 枚举新值一律追加在末尾，不插中间
    插中间会让已保存的枚举值全部错位，而且不报错
 ```
@@ -322,7 +329,7 @@
 | AddBonus         | float（AttackDelta）                   | /                      | 添加武器加成                                          |
 | IsDead           | /                                    | bool（Dead）             | 角色是否死亡                                          |
 | TakeDamage       | float（BaseDamage），float（PoiseDamage） | bool（bIsBroken）        | 扣血扣韧，返回是否破韧。**内部不再乘防御**                         |
-| ReceiveDamage    | ST_AttackData，float，Vector3（攻击者位置），Vector3（HitPoint），float | E_HitOutCome，bool，bool | 完整受击判定：攻击数据、基础伤害、攻击者位置、击中点、基础削轫 → 受击类型、是否完美格挡、是否完美闪避 |
+| ReceiveDamage    | ST_AttackData，float，Vector3（攻击者位置），Vector3（HitPoint），float | E_HitOutCome，bool，bool，bool | 完整受击判定：攻击数据、基础伤害、攻击者位置、击中点、基础削轫 → 受击类型、是否完美格挡、**是否破韧**、是否完美闪避 |
 | ClearPoseBroken  | /                                    | /                      | 清除削轫破防效果                                        |
 | RestorePoise     | /                                    | /                      | 恢复韧性到 MaxPoise（Tick 里调用）                        |
 | EnterGuard       | /                                    | /                      | 进入格挡：置 bIsGuarding，记录 LastGuardTime             |
@@ -331,12 +338,13 @@
 | SetInvincible    | bool（bInvincible）                     | /                      | 开关无敌。由 `ANS_IFrame` 的 Begin / End 调用              |
 | EndPerfectDodge  | /                                    | /                      | 完美闪避收尾：若仍在无敌则关无敌并补一段尾巴。由 Combat 调用 |
 
-`ReceiveDamage` **的三个输出含义：**
+`ReceiveDamage` **的四个输出含义：**
 
 | 输出              | 含义                                        |
 | --------------- | ----------------------------------------- |
 | HitOutCome      | `Ignore` 无伤 / `Hit` 普通受击 / `Blocked` 格挡生效 |
 | bPerfectBlock   | 是否完美格挡（完全免伤）                              |
+| IsBroken        | **本次攻击是否破韧** —— 直通 `TakeDamage` 的返回值，不再存成员变量 |
 | bPerfectDodge   | 是否完美闪避（在无敌帧内**且**处于完美窗口）                  |
 
 **判定优先级（顺序不能调）：**
@@ -352,6 +360,16 @@
 ```
 
 **② 的两个条件是 `AND`：只判时间会把闪避结束后的受击误判成完美；只判无敌会把整个无敌区间都算成完美，缓冲带就没了。**
+
+**破韧不单独存状态：**
+
+```
+韧性扣除与破韧判断都在 TakeDamage 内部完成（扣到 0 时返回 bIsBroken = true）
+ReceiveDamage 把它直通为 IsBroken 输出，不再维护 bPoiseBroken 成员变量
+→ 调用方拿到 IsBroken 决定破韧表现（硬直/动画/音效），无需再查询 Attribute
+```
+
+**⭐ 这是「规范 · 状态表达」第 ② 条的直接应用：能从函数返回值得到的，不要额外存 bool。**
 
 **五个输入的分工：**
 
@@ -579,6 +597,17 @@ BPC_CameraDirector      项目自研的相机控制组件 —— 锁定、震动
 TryEnterState    状态层说了算 —— 查转场矩阵
 ForceEnterState  战斗层说了算 —— 战斗层已判定连招成立，状态层照做
 SetState         不用判断   —— 复位收尾
+```
+
+**`CanTransitionTo`（内部函数）是所有试转场的统一闸门，攻击后摇取消就在这里放行：**
+
+```
+CanTransitionTo(NewState)
+  ├─ 默认：查转场矩阵
+  └─ 攻击态（CurrentState == Attack）+ bCanCancel 为真
+       → 允许转出到 Locomotion（取消后摇）
+         ⚠️ 只有「无后续连招」时才会走到这里：
+           有 Next 的段优先走 ForceEnterState 续接，不会进取消分支
 ```
 
 **受控状态（HitLight / HitHeavy / KnockDown / Dead）内部有优先级，可升级、可幂等，不可降级、不可逃逸。**
@@ -1800,12 +1829,11 @@ GetAttackRowPrefix(bIsHeavy : bool) → String
 | `Counter_H2` | `Counter_H3` |
 | `Counter_H3` | 空（收招） |
 | `BlockCounter_L1` | `BlockCounter_L2` |
-| `BlockCounter_L2` | `BlockCounter_L3` |
-| `BlockCounter_L3` | `BlockCounter_L4` |
-| `BlockCounter_L4` | 空（收招） |
+| `BlockCounter_L2` | 空（收招） |
 | `BlockCounter_H1` | `BlockCounter_H2` |
-| `BlockCounter_H2` | `BlockCounter_H3` |
-| `BlockCounter_H3` | 空（收招） |
+| `BlockCounter_H2` | 空（收招） |
+
+**格挡反击段数比闪避反击短（4 vs 7 行），是有意设计：格挡后硬直更短，反击更快结束。**
 
 **`MotionSelf` 建议带向前位移：**
 
@@ -1870,7 +1898,7 @@ DoJump                → CloseCounterWindow()    跳跃也是重开动作
 
 ### 3）完美格挡
 
-> **状态：判定链与反馈已完整（震动 / 音效 / FOV 特写全部接入）；完美格挡反击部分完成（详见（12））。**
+> **状态：判定链与反馈已完整（震动 / 音效 / FOV 特写全部接入）；完美格挡反击已完成（详见（12））。**
 >
 > **⚠️ 本节只写完美格挡。普通格挡受击（`Blocked` 非完美）的表现与状态处理尚未完善，不在此列。**
 
@@ -1887,7 +1915,7 @@ DoJump                → CloseCounterWindow()    跳跃也是重开动作
 | 完美格挡撞击音 `PlayPerfectBlockSound()` | ✅ 已实现 | 独立接口，不复用闪避音效 |
 | 强震屏 `Shake(PerfectBlock, HitPoint, 2.0)` | ✅ 已实现 | （11.1） |
 | FOV 特写 `PlayPerfectBlockCloseUp()` | ✅ 已接入 `PlayHitFeedback` 的 `bPerfect` 分支 | （11.3） |
-| 完美格挡反击 `BlockCounter_*` | ⚠️ **部分完成，需优化** | （12） |
+| 完美格挡反击 `BlockCounter_*` | ✅ 已实现（轻击 2 段 + 重击 2 段） | （12） |
 | 火花 / 后处理爆闪 / 敌人被弹开 / 手柄震动 | ⬜ 未开始 | （11.6） |
 
 #### （1）完美格挡与完美闪避的定位差别
@@ -2122,8 +2150,8 @@ t = 0.14   顿帧结束
 t = 0.20   敌人慢速结束，恢复 1.0
 t = 0.20 ~ 0.45  FOV 平滑回位到 BaseFOV
 t = 0.10 ~ 0.90   ★ 格挡反击窗口
-           按轻击 → BlockCounter_L1 → L2 → L3 → L4
-           按重击 → BlockCounter_H1 → H2 → H3
+           按轻击 → BlockCounter_L1 → L2 → 空
+           按重击 → BlockCounter_H1 → H2 → 空
 t = 0.90   CloseCounterWindow() → CounterType = None
 ```
 
@@ -2218,7 +2246,7 @@ t = 0.90   CloseCounterWindow() → CounterType = None
 | `PerfectBlockSound` | `USoundBase` | 完美格挡撞击音 |
 | `PlayPerfectDodgeEndSound()` | **【内部函数】** | 计时器回调，播结束音 |
 
-**`DT_Attacks`：** 计划新增 `BlockCounter_L1..L4` / `BlockCounter_H1..H3`；**实际当前只有 `BlockCounter_H1`，补齐清单见（12.2）**。
+**`DT_Attacks`：** 轻击 `BlockCounter_L1~L2` + 重击 `BlockCounter_H1~H2`，共 4 行；与闪避反击（轻 4 + 重 3）有意区分。格挡反击链路已打通，见（12）。
 
 **`E_CounterType`：** 新建枚举，`None` / `Block` / `Dodge`。
 
@@ -2243,7 +2271,7 @@ t = 0.90   CloseCounterWindow() → CounterType = None
 
 【反击窗口】
 □ 完美格挡后轻击 → BlockCounter_L1 → L2 → L3 → L4
-□ 完美格挡后重击 → BlockCounter_H1 → H2 → H3
+□ 完美格挡后重击 → BlockCounter_H1 → H2 → 空
 □ 窗口过期后轻击 → Attack1
 □ 完美闪避在 Block 窗口期间触发 → CounterType 变 Dodge（闪避优先）
 □ Block 守在 Dodge 窗口期间触发 → CounterType 保持 Dodge，不降级
@@ -2579,36 +2607,34 @@ t = 0.10  判定成功
 □ BPCS_PerfectDodge 参数调整（已拆分出来，暂沿用默认值）
 ```
 
-#### （12）完美格挡反击：部分完成，需优化
+#### （12）完美格挡反击：已实现
 
-> **状态：链路已跑通（能开窗、能打出 `BlockCounter_H1`），但数据只配了一段，需要补齐与调优。**
+> **状态：已设计并实现。轻击 2 段 + 重击 2 段，与完美闪避反击（轻 4 + 重 3）有意区分，格挡反击更短更紧凑。**
 
 ##### 12.1 当前实际状态
 
 **`E_CounterType.Block` 开窗之后，`GetAttackRowPrefix` 返回 `BlockCounter_`，拼上行号去 `DT_Attacks` 查。**
 
-**`DT_Attacks` 里现有的反击行（实际扫描结果）：**
+**`DT_Attacks` 里现有的格挡反击行（实际扫描结果）：**
 
 | 前缀 | 轻击 | 重击 | 归属 |
 | --- | --- | --- | --- |
 | `Counter_*` | `Counter_L1` ~ `Counter_L4` ✅ 齐全 | `Counter_H1` ~ `Counter_H3` ✅ 齐全 | 完美闪避反击 |
-| `BlockCounter_*` | **`BlockCounter_L1`~`L4` ❌ 全部缺失** | **只有 `BlockCounter_H1` ⚠️，缺 `H2` / `H3`** | 完美格挡反击 |
+| `BlockCounter_*` | `BlockCounter_L1` ~ `L2` ✅ 齐全 | `BlockCounter_H1` ~ `H2` ✅ 齐全 | 完美格挡反击 |
 
 **⭐ 结论：**
 
 ```
-完美格挡后按重击 → 能打出 BlockCounter_H1，但第二三段断开
-完美格挡后按轻击 → 找不到行，行为待确认（可能回落到 Attack / 无反应）
+完美格挡后按轻击 → L1 → L2，两段连招
+完美格挡后按重击 → H1 → H2，两段连招
 ```
 
-**⚠️ 轻击四段全缺，这是当前最影响手感的问题 —— 玩家习惯用轻击试探，格挡后按轻击没反应会被直接感知为 bug。**
+##### 12.2 数据表结构（与 `Counter_*` 同构）
 
-##### 12.2 补齐清单
-
-| 要补的行 | 段数 | 说明 |
+| 要填的行 | 段数 | 说明 |
 | --- | --- | --- |
-| `BlockCounter_L1` ~ `L4` | 4 | 对齐 `Counter_L1..L4` 的段数与 `Next` 链 |
-| `BlockCounter_H2` / `H3` | 2 | 对齐 `Counter_H1..H3` |
+| `BlockCounter_L1` / `L2` | 2 | 轻击反击，两段连招，`Next`：`L2` → 空 |
+| `BlockCounter_H1` / `H2` | 2 | 重击反击，两段连招，`Next`：`H2` → 空 |
 
 **每行最少要填的字段（与 `Counter_*` 保持同构）：**
 
@@ -2620,26 +2646,20 @@ MotionSelf               位移（格挡反击应比闪避反击更小，人站�
 DamageScale / PoiseScale 伤害与削轫
 ```
 
-**⭐ `Next` 链必须首尾相接：`L1→L2→L3→L4`、`H1→H2→H3`，末段为空。漏一环就会出现「打到第二段就断」。**
+**⭐ `Next` 链必须首尾相接：`L1→L2`、`H1→H2`，末段为空。漏一环就会出现「打到第二段就断」。**
 
 ##### 12.3 需要优化的点
 
 ```
-① 轻击四段全缺（P0）
-   补齐 BlockCounter_L1~L4，否则格挡后按轻击无反馈
-
-② 重击缺 H2 / H3（P0）
-   BlockCounter_H1 的 Next 指向不存在的行 → 连招断在第一段
-
-③ 位移量尚未区分（P1）
+① 位移量尚未区分（P1）
    完美闪避反击自带位移（人闪走了），格挡反击是原地站稳
    MotionSelf 应该显著小于 Counter_*，甚至为 0
 
-④ 段数与闪避反击不对称（P2）
-   闪避反击 轻 4 + 重 3 = 7 行；格挡反击目前 1 行
-   补齐后建议也是 轻 4 + 重 3，保持两套反击的节奏预期一致
+② 段数与闪避反击不对称（P2）
+   闪避反击 轻 4 + 重 3 = 7 行；格挡反击 轻 2 + 重 2 = 4 行
+   这是有意设计：格挡后硬直更短，反击更快结束
 
-⑤ 命中反馈未区分（P2）
+③ 命中反馈未区分（P2）
    格挡反击应该更"重"：更强震屏 + 更重的受击音
    目前沿用的是普通攻击的反馈
 ```
@@ -2647,8 +2667,8 @@ DamageScale / PoiseScale 伤害与削轫
 ##### 12.4 验证顺序
 
 ```
-① 完美格挡 → 按轻击 → 逐段确认 L1→L2→L3→L4 都能打出
-② 完美格挡 → 按重击 → 确认 H1→H2→H3
+① 完美格挡 → 按轻击 → L1→L2 两段都能打出
+② 完美格挡 → 按重击 → H1→H2 两段都能打出
 ③ 窗口过期后按攻击 → 回落 Attack1（不是 BlockCounter）
 ④ 完美格挡 → 按轻击 → 再按重击 → 确认不会混链
 ⑤ 敌人三连击全完美格挡 → 只触发一次开窗（bPerfectBlockUsed）
@@ -3051,6 +3071,51 @@ Map 的 Add(Key, Value) / Remove(Key) 天然不会错位
 
 ---
 
+### 8）攻击后摇取消（无后续连招时）
+
+**可行，已实现。** 攻击后摇段若没有后续连招，可被玩家输入取消，直接起新攻击。
+
+**实现位置：`BPC_ActionState.CanTransitionTo`（内部函数）**
+
+状态层只管"能不能转场"，改动只在一个闸门：
+
+```
+CanTransitionTo(NewState)
+  ├─ 默认：查转场矩阵
+  └─ CurrentState == Attack && bCanCancel == true
+       → 允许转出到 Locomotion（取消后摇，立即可起新攻击）
+```
+
+**与连招续接的区分：**
+
+```
+连招续接：有 Next 段 → Combat 用 ForceEnterState（走转场闸门，需窗口打开）
+后摇取消：无 Next 段（或输入别的动作）→ TryEnterState(Locomotion) 退出攻击态
+→ 两者不混淆：ForceEnterState 天然只在有 Next 时可用，后摇取消发生在"没连招可走"的最后一段
+```
+
+**数据驱动：**
+
+| 数据 | 作用 |
+| --- | --- |
+| `ST_AttackData.CancelStart` | 取消窗口打开的时刻（攻击起手后 N 秒） |
+| `BPI_ActionState.SetCancelWindow(bool)` | Combat 开合取消窗口，只允许 Combat 与动画通知调用 |
+| `bCanCancel` | ActionState 内部标志，当前是否在可取消窗口内 |
+
+**时间顺序：**
+
+```
+攻击起手 → Set Timer(CancelStart → SetCancelWindow(true))
+   │
+   ├─ 有 Next + 按攻击 → ForceEnterState(Next) 续接连招
+   ├─ 无 Next + 输入攻击/闪避/跳跃 → TryEnterState(Locomotion) 取消后摇，立即起新动作
+   └─ Cancel 窗口结束 → SetCancelWindow(false)
+```
+
+**不改的地方：** `TryEnterState` 的"永远不能回 Locomotion"不变；取消后摇走的是在窗口内从 Attack 转 Locomotion，属于转场闸门放行，不违背该约定。
+
+---
+
 ## 9，运行导图
 
 > 组件之间的实际流转。图上只画调用关系，判断规则看 [8，功能实现](#8功能实现)。
@@ -3234,7 +3299,9 @@ Move To 的 Blackboard Key 选 TargetActor
 | 29  | 完美格挡的反馈                  | 完美格挡只有震屏，且不够大；`ReceiveDamage` 拿不到击中点；`PlayHitStop` 只对传入的攻击者生效，做不到"双方都停"；完美闪避与完美格挡共用一个抖动资产 | `ReceiveDamage` 新增 `HitPoint` 入参（第三个仍是攻击者位置 —— 判定用位置、表现用击中点，不能互相替代）；`OnPerfectBlock` 改为带 `Vector3`；`PlayPerfectDodgeSlowMo` 改名 `PlayEnemySlowMo(Scale, Duration)`（闪避 0.1/0.5，格挡 0.15/0.12）；顿帧改为双方各调 `PlayHitStop(Self, 0.04)`，明确不用 `GlobalTimeDilation`（会拖慢 `Set Timer` 导致反击窗口变长）；新增 `BPI_CameraDirector.PlayPerfectBlockCloseUp`（FOV 特写 `BaseFOV−16`，`TickComponent` 三阶段插值，**用 `Get Game Time in Seconds` 而非 `DeltaTime`** 规避顿帧冻结）；新增 `E_CloseUpPhase`（`None` 兼作空闲态，不再需要 `bCloseUpActive`）；`E_CameraShakeType` 补 `PerfectDodge`（共 6 个，文档此前漏写）；`BPCS_PerfectBlock` 参数改为冲击型（`BlendInTime = 0`），`BPCS_PerfectDodge` 已拆分但参数暂不调；接口总数仍为 98 |
 | 30  | BPI_LockOn.GetTarget          | 文档与实际都列有该函数，`GetFocusTarget` 与 `GetTarget` 并存 | 实际已删除，内容并入 `GetFocusTarget`（锁定中返回锁定对象，未锁定时返回候选）；`BPI_LockOn` 6 → 5，接口总数 98 → 97 |
 | 31  | BPI_CombatFeedBack            | 4 个函数；`PlayEnemySlowMo` 内部播完美闪避音效 | 实际 6 个：新增 `PlayPerfectDodgeStartSound(Duration)` / `PlayPerfectBlockSound`；**音效已从 `PlayEnemySlowMo` 移出**，慢动作接口只调时间膨胀；结束音 `PlayPerfectDodgeEndSound` 为【内部函数】由开始音的计时器触发；接口总数 97 → 99 |
-| 32  | DT_Attacks 的 BlockCounter_*  | 文档写 `BlockCounter_L1..L4` / `BlockCounter_H1..H3`（7 行） | **实际只有 `BlockCounter_H1`**：轻击 `L1~L4` 全缺、重击缺 `H2/H3`；完美闪避反击的 `Counter_L1~L4` / `Counter_H1~H3` 齐全。补齐清单见 8-3（12） |
+| 32  | DT_Attacks 的 BlockCounter_*  | 文档写轻击 4 段 + 重击 3 段（对齐闪避反击） | 实际是轻击 `BlockCounter_L1~L2` + 重击 `BlockCounter_H1~H2`，共 4 行；比闪避反击（轻 4 + 重 3）短，是有意设计。`Montage_BlockCounter` 已建，格挡反击链路已打通 |
+| 33  | BPC_Attribute.bPoiseBroken    | 作为成员变量存储破韧状态 | **已删除**：变量完全没被读取（韧性扣除与破韧判断都在 `TakeDamage` 内部），改用内部变量；`ReceiveDamage` 输出从 3 个变 4 个（新增 `IsBroken`），直通 `TakeDamage` 的返回 |
+| 34  | BPC_ActionState.CanTransitionTo | 转场只查转场矩阵 | 新增 `bCanCancel` 判断：攻击态 + 取消窗口内 → 允许转出到 Locomotion。**无后续连招时攻击后摇可被输入取消**，是 `CanTransitionTo` 唯一改动，见 8-8 |
 
 ### 需要在编辑器里处理的遗留问题
 
