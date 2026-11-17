@@ -40,6 +40,9 @@
 | 2026.11.13 | 完美格挡与反击 | 补充完美格挡实施进度表与（12）完美格挡反击小节；`BPI_CombatFeedBack` 4 → 6（新增 `PlayPerfectDodgeStartSound` / `PlayPerfectBlockSound`），结束音转为【内部函数】由开始音计时；`BlockCounter_*` 实际只有 `H1`，轻击四段与 `H2/H3` 待补 | 作者 |
 | 2026.11.14 | 完美格挡反击数据表 | `DT_Attacks` 补齐 `BlockCounter_L1~L2 / H1~H2` 四行，`Montage_BlockCounter` 蒙太奇已建，格挡反击轻 2 + 重 2 = 4 行，与闪避反击轻 4 + 重 3 有意区分 | 作者 |
 | 2026.11.14 | 攻击后摇取消与破韧精简 | `CanTransitionTo` 加 `bCanCancel` 判断，无后续连招时攻击后摇可被输入取消；删除 `bPoiseBroken` 成员变量，`ReceiveDamage` 直通 `TakeDamage` 的破韧返回并作为 `IsBroken` 输出（三个输出变四个） | 作者 |
+| 2026.11.14 | 普通格挡受击设计 | 新增 8-3（13）普通格挡受击：弱震屏 0.8 + 沉闷格挡音 + 双方各 0.02s 顿帧，无慢速无 FOV，保持格挡姿态；含节流（音高 ±5% / 震屏递减）与破韧 Guard Break 第二步方案 | 作者 |
+| 2026.11.14 | 普通格挡受击实现 | `OnDamageApplied(Blocked)` → `HandleGuardHit`：查 `DT_Reaction` 的 `BlockHit` 行播蒙太奇，`bReliefOriginal=true` 播完保持 Guard；新增 `DT_Reaction`（复用 `ST_AttackData`，仅读 Montage / SectionStart / LaunchSelf / MotionSelf / MoveSpeed / MoveFriction）；破韧直接返回 `Hit` 不经本链路；上半身分离方案（Layered Blend Per Bone + UpperBody Slot，Slot 名即开关，默认 DefaultSlot 全身） | 作者 |
+| 2026.11.17 | 上半身分离实现 | `ABP_Player` 接入 Layered Blend per Bone + UpperBody Slot（**仅上半身，下半身层未实现**）：`Montage_BlockHit` 改走 `DefaultGroup.UpperBody`，上半身受击、下半身保持 BlockState，滑步修复；三条硬约束（混合深度必须 0、`DefaultSlot` 必须在 LayeredBlend 之后、`MainPose` 缓存只包状态机输出）记入 8-3（13.5）；插槽管理器注册 `UpperBody` | 作者 |
 
 ---
 
@@ -86,7 +89,7 @@
 - [8，功能实现](#8功能实现) —— 单个机制的设计细则
     - [1）敌人受击状态机](#1敌人受击状态机) —— 等级、优先级、幂等与重播
     - [2）完美闪避与无敌帧](#2完美闪避与无敌帧) —— 无敌区间 / 完美窗口 / 奖励链
-    - [3）完美格挡](#3完美格挡) —— 判定、格挡 CD、反击窗口、与闪避反击的优先级
+    - [3）完美格挡](#3完美格挡) —— 判定、格挡 CD、反击窗口、与闪避反击的优先级；含（13）普通格挡受击（已实现）与上半身分离
     - [4）闪避方向（四向）](#4闪避方向四向) —— 方向判定、参考系对齐、四行数据
     - [5）动作位移：水平与垂直冲量必须分开处理](#5动作位移水平与垂直冲量必须分开处理) —— 近身撞人时上挑被吞的原因
     - [6）刀光：Niagara 条带拖尾](#6刀光niagara-条带拖尾) —— 为什么不用静态弧面、条带的三条硬设置
@@ -1898,9 +1901,9 @@ DoJump                → CloseCounterWindow()    跳跃也是重开动作
 
 ### 3）完美格挡
 
-> **状态：判定链与反馈已完整（震动 / 音效 / FOV 特写全部接入）；完美格挡反击已完成（详见（12））。**
+> **状态：判定链与反馈已完整（震动 / 音效 / FOV 特写全部接入）；完美格挡反击已完成（详见（12））；普通格挡受击已实现（详见（13），含上半身分离，下半身层未实现）。**
 >
-> **⚠️ 本节只写完美格挡。普通格挡受击（`Blocked` 非完美）的表现与状态处理尚未完善，不在此列。**
+> **⚠️ （1）~（12）只写完美格挡；（13）单独写普通格挡受击 —— 两者共用同一套判定，只在表现层分叉。**
 
 **实施进度总览：**
 
@@ -2684,6 +2687,183 @@ DamageScale / PoiseScale 伤害与削轫
 ```
 
 **⭐ 开发期用 B，发布前改 A。这样缺行不会被静默吞掉。**
+
+#### （13）普通格挡受击：已实现（轻受击）
+
+> **状态：已实现（暂只有轻受击一种）。** 链路：`OnDamageApplied(Blocked)` → `HandleGuardHit` → 查 `DT_Reaction` 的 `BlockHit` 行 → 播蒙太奇，播完保持格挡。
+
+##### 13.1 链路
+
+```
+敌人攻击命中玩家（被格挡）
+   ↓
+BPC_Attribute.ReceiveDamage 第 ③ 条
+  格挡 + 正面 + Poise>0 + 不在完美窗口 → Blocked
+   ↓
+OnDamageApplied.Broadcast(Blocked, HitDirection, bPoiseBroken)
+   ↓
+BPC_Combat 分流（按 HitOutCome）
+   ├─ Hit     → EnterHit（受击硬直）
+   └─ Blocked → HandleGuardHit
+                  ├─ DT_Reaction 查 "BlockHit" 行
+                  └─ PlayReactionMontage(Data, bReliefOriginal = true)
+                       └─ 播完：true → 什么都不做（保持 Guard）；false → SetState(Locomotion)
+```
+
+**`bReliefOriginal` 复用**：`EnterHit` 也调 `PlayReactionMontage`，传 `false` → 播完回 Locomotion；格挡受击传 `true` → 播完保持原状态（Guard）。两个场景共用一条播放链路，只在「播完去哪」分叉。
+
+**⚠️ `OnDamageApplied` 不是 100% 触发：** 完美格挡（走 `OnPerfectBlock`）、完美闪避、无敌帧、死亡都不触发。但需要受击反馈的两种情况（Hit / Blocked）恰好都会触发，所以分流入口正确。
+
+##### 13.2 数据：DT_Reaction
+
+**新表，复用 `ST_AttackData` 结构（为省事，不另建结构体）。**
+
+```
+行：HitLight_Front / HitLight_Back / HitLight_Left / HitLight_Right
+    HitHeavy_Front / HitHeavy_Back / HitHeavy_Left / HitHeavy_Right
+    BlockHit
+```
+
+**查表规则：** `EnterHit` 按 `HitType + "_" + HitDirection` 拼行名（如 `HitLight_Front`）；格挡固定查 `BlockHit`，不分方向。
+
+**⚠️ 反应表只读以下字段，其余字段不生效（复用结构体的冗余）：**
+
+| 生效字段 | 用途 |
+| --- | --- |
+| `Montage` | 反应动画 |
+| `SectionStart` | 动画起始段 |
+| `LaunchSelf` | 自身击退位移 |
+| `MotionSelf` | 自身姿态位移 |
+| `MoveSpeed` | 位移速度 |
+| `MoveFriction` | 位移摩擦 |
+
+```
+不生效：DamageRate / PoiseDamageRate / Next / CancelStart / HitStop /
+        LaunchEnemy / CanLaunchAir / PlayGravity
+→ 反应行是“受击表现”，不是“出招”；填了攻击字段也不会被读取
+```
+
+**`BlockHit` 只有一行、不分方向** —— 格挡只存在正面受击（判定层保证），不存在左右后的格挡，不需要方向变体。
+
+##### 13.3 三向分流（互不交叉）
+
+| 情况 | 走哪条路 | 经过 HandleGuardHit |
+| --- | --- | --- |
+| 完美格挡 | `OnPerfectBlock` → `HandlePerfectBlock` | ❌ |
+| 普通格挡 | `OnDamageApplied(Blocked)` → `HandleGuardHit` | ✅ |
+| 破韧（格挡被击碎） | Attribute 内部直接返回 `Hit` → `EnterHit` | ❌ |
+| 完美闪避 / 无敌帧 / 死亡 | 不触发 `OnDamageApplied` | ❌ |
+
+**所以 `HandleGuardHit` 只处理「未破韧的普通格挡」，不需要破韧分支。**
+
+##### 13.4 交互约束
+
+```
+不能移动      播 montage 期间（格挡受击是站桩）
+不能取消      反应表的 CancelStart 不生效（仅为复用结构体）
+无自身顿帧    顿帧由攻击方 PlayHitFeedback 产生（与玩家攻击命中敌人一致）
+震屏          走 PlayHitFeedback(Blocked) 既有链路，不重复触发
+Delegate       OnCompleted / OnBlendOut 在 BeginPlay 绑定一次，不每次播放都绑
+```
+
+##### 13.5 上半身分离（已实现，下半身未分离）
+
+> **范围说明：目前只实现了上半身分离（`UpperBody` Slot），下半身层（`LowerBody` Slot）尚未实现。** 现有需求（格挡受击）只需要上半身，下半身层留到出现「下半身动作 montage」需求（如滑铲、蹲扫）时再加，结构与上半身层对称，见本节末尾。
+
+**问题**：所有 montage 走 `DefaultSlot`（全身），格挡受击时下半身被 montage 接管，玩家移动输入仍推进 → 滑步。
+
+**已实现的 AnimGraph 结构（ABP_Player，上半身层）：**
+
+```
+StateMachine（Locomotion / BlockStart / BlockState ...）
+   ↓
+Save Cached Pose "MainPose"        ← 只存状态机输出，不含 DefaultSlot
+   ↓
+Layered Blend per Bone
+   Base Pose    ← Use cached pose MainPose
+   Blend Pose 0 ← Slot("UpperBody")，输入接 Use cached pose MainPose
+   Layer Setup  = spine_01 / BlendDepth 0 / 网格空间旋转混合勾选
+   ↓
+Slot("DefaultSlot")                ← 全身 montage 最后应用，最高优先级
+   ↓
+Output Pose
+```
+
+**开关设计：montage 的 Slot 名就是开关，默认全身。**
+
+```
+Slot = DefaultSlot（UE 默认）→ 全身控制（开关关，默认行为）
+Slot = UpperBody            → 只控制上半身
+```
+
+**⭐ LayeredBlend 不是「按动作启用的节点」，它永远在；Slot 里没有 montage 时直通，等于不生效。开关在 montage 资产上，不在 AnimGraph 里。**
+
+**三条硬约束（踩坑记录，全部实测）：**
+
+```
+① 混合深度必须是 0，不能是 -1
+   BlendDepth = -1 → 从 spine_01 向父级方向混合
+   → 手臂、头不在混合范围内 → 上半身 montage 看起来「完全不播」
+   BlendDepth = 0  → spine_01 及其整个子树 → 正常
+
+② DefaultSlot 必须在 LayeredBlend 之后（主链最后）
+   如果 DefaultSlot 藏在 MainPose 缓存里（LayeredBlend 之前）：
+   → Blend 链无 montage 时输出「不含攻击的姿势」→ 覆盖 Base 的上半身
+   → 其他 montage（攻击）的上半身被吃掉
+
+③ MainPose 缓存只包 StateMachine 输出
+   不能包含 DefaultSlot，否则 ② 的「吃半身」问题复现
+```
+
+**效果（已验证）：**
+
+```
+移动中格挡受击 → 上半身后仰 + 下半身行走（不滑步）
+站定格挡受击   → 上半身后仰 + 下半身格挡站姿（BlockState）
+攻击           → DefaultSlot 最后覆盖全身，上半身正常
+```
+
+**症状 → 修复 对照表：**
+
+| 症状 | 根因 | 修复 |
+| --- | --- | --- |
+| 上半身 montage 完全不播 | 混合深度 -1（只向父级混合） | 改为 0 |
+| 其他 montage 上半身丢失 | DefaultSlot 在 LayeredBlend 之前，或 MainPose 缓存含 DefaultSlot | DefaultSlot 挪到主链最后，MainPose 只存状态机输出 |
+| montage 不播且无报错 | Slot 名三处不一致（AnimGraph / 插槽管理器 / montage 槽名） | 逐字对齐（区分大小写与空格） |
+
+**交付物：**
+
+```
+插槽管理器：DefaultGroup / DefaultSlot + UpperBody
+Montage_BlockHit 的 Slot：DefaultGroup.UpperBody
+```
+
+**下半身分离 —— 未实现（未来需求再做）：**
+
+```
+⚠️ 当前没有 LowerBody 层，也没有任何 montage 只控制下半身。
+   现有 montage 现状：
+     全身    → DefaultSlot
+     上半身  → UpperBody
+     下半身  → 无（未来再加）
+
+届时叠一层 LayeredBlend（LowerBody Slot），放在上半身层之前：
+  Layer Setup = pelvis(0) + thigh_l(-1) + thigh_r(-1)
+⚠️ 不要 pelvis(-1)：pelvis 的后代会包含 spine_01，上半身会被一起罩进来
+```
+
+##### 13.6 验证清单
+
+```
+□ 格挡受击：上半身播放受击动画，播完回到格挡姿态（BlockState）
+□ 攻击不受影响：DefaultSlot 全身覆盖正常
+□ 移动中格挡受击：下半身继续走，不滑步
+□ 站定格挡受击：下半身格挡站姿不动
+□ 连续格挡：montage 重播不报错
+□ 破韧一击：走 EnterHit(HitLight)，不经过 HandleGuardHit
+□ 完美格挡：走 HandlePerfectBlock，不经过 HandleGuardHit
+□ 完美闪避 / 无敌帧 / 死亡：不触发 OnDamageApplied，无残留
+```
 
 ---
 
