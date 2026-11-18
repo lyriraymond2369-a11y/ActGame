@@ -4,24 +4,29 @@
 
 ### 3）完美格挡
 
-> **状态：判定链与反馈已完整（震动 / 音效 / FOV 特写全部接入）；完美格挡反击已完成（详见（12））；普通格挡受击已实现（详见（13），含上半身分离，下半身层未实现）。**
+> **状态：判定链与反馈已完整（震动 / 音效 / FOV 特写全部接入）；完美格挡反击已完成（详见（12））；普通格挡受击已实现（详见（13），含上半身分离，下半身层未实现）；格挡破防已实现（详见（14））；完美窗口已区间化（起止两值）；格挡 CD 已迁入 `BPC_ActionState`。**
 >
-> **⚠️ （1）~（12）只写完美格挡；（13）单独写普通格挡受击 —— 两者共用同一套判定，只在表现层分叉。**
+> **⚠️ （1）~（12）只写完美格挡；（13）普通格挡受击；（14）格挡破防 —— 三者共用同一套判定，只在表现层分叉。**
 
 **实施进度总览：**
 
 | 环节 | 状态 | 位置 |
 | --- | --- | --- |
-| 判定（格挡 + 正面 + `Poise > 0` + 完美窗口） | ✅ 已实现 | `ReceiveDamage` 第 ③ 条 |
+| 判定（格挡 + 正面 + `Poise > 0` + 完美窗口区间） | ✅ 已实现 | `ReceiveDamage` 第 ③ 条 → `IsPerfectBlock()` |
+| 完美窗口区间化（Start / End 两值） | ✅ 已实现 | `BPC_Attribute.IsPerfectBlock` |
 | 防重复 `bPerfectBlockUsed` | ✅ 已实现 | `BPC_Attribute` |
 | 判定后收尾（退格挡 / 回 Locomotion / 清 CD / 开窗口） | ✅ 已实现 | `HandlePerfectBlock`（4）的第 1~3 步 |
-| 格挡入口门槛（`TryGuard` + CD） | ✅ 已实现 | （6） |
+| 格挡入口门槛（`TryGuard` + `CanGuard`） | ✅ 已实现 | （6） |
+| 格挡 CD（迁入 `BPC_ActionState`） | ✅ 已实现 | （5） |
 | 顿帧 0.04s（双方各停） | ✅ 已实现 | 双方各调 `PlayHitStop(Self, 0.04)` |
 | 敌人慢速 `PlayEnemySlowMo(0.15, 0.12)` | ✅ 已实现 | （4）第 5 步 |
 | 完美格挡撞击音 `PlayPerfectBlockSound()` | ✅ 已实现 | 独立接口，不复用闪避音效 |
 | 强震屏 `Shake(PerfectBlock, HitPoint, 2.0)` | ✅ 已实现 | （11.1） |
 | FOV 特写 `PlayPerfectBlockCloseUp()` | ✅ 已接入 `PlayHitFeedback` 的 `bPerfect` 分支 | （11.3） |
 | 完美格挡反击 `BlockCounter_*` | ✅ 已实现（轻击 2 段 + 重击 2 段） | （12） |
+| 普通格挡受击 `BlockHit` | ✅ 已实现 | （13） |
+| 上半身分离（UpperBody Slot） | ✅ 已实现（下半身层未实现） | （13.5） |
+| 格挡破防 `GuardBreak` | ✅ 已实现 | （14） |
 | 火花 / 后处理爆闪 / 敌人被弹开 / 手柄震动 | ⬜ 未开始 | （11.6） |
 
 #### （1）完美格挡与完美闪避的定位差别
@@ -56,11 +61,36 @@
 
 ```
 ③ 格挡 + 正面 + Poise > 0
-     在 PerfectGuardWindow 内   → Blocked + bPerfectBlock = true（免伤）
+     IsPerfectBlock() == true   → Blocked + bPerfectBlock = true（免伤）
      否则                       → Blocked，伤害 ×(1−GuardDamageRate)，削轫 ×GuardPoiseRate
 ```
 
 **⭐ 所以"判定"这件事本来就完成了，本节要补的是**判定成功之后发生什么**。**
+
+**完美窗口是区间，不是"架刀瞬间即完美"（`BPC_Attribute.IsPerfectBlock`）：**
+
+```
+IsPerfectBlock() → bool
+  ├─ bIsGuarding == false → false
+  └─ Elapsed = Get Game Time in Seconds − LastGuardTime
+       Elapsed InRange [PerfectGuardWindowStart, PerfectGuardWindowEnd] → true
+       否则 → false
+```
+
+| 变量（`BPC_Attribute`） | 类型 | 说明 |
+| --- | --- | --- |
+| `LastGuardTime` | float | `EnterGuard` 时记录 |
+| `PerfectGuardWindowStart` | float | 完美窗口起点（架刀后 N 秒，**大于 0 —— 架刀瞬间不算完美**） |
+| `PerfectGuardWindowEnd` | float | 完美窗口终点 |
+
+```
+调参起点（非定论）：
+  Start = 0.08~0.12   给物理反应时间，架刀瞬间受击是普通格挡
+  End   = 0.25~0.30   窗口总长 0.15~0.2s
+  窗口太长 → 完美格挡烂大街；太短 → 靠运气
+```
+
+**⚠️ 旧的单值变量 `PerfectGuardWindow` 已删除，不要残留 —— 判定口径只能有一处（`IsPerfectBlock`），`ReceiveDamage` 里不要重复写区间计算。**
 
 **`ReceiveDamage` 的五个输入里，本节只用到两个位置：**
 
@@ -116,7 +146,7 @@ HandlePerfectBlock(HitPoint)                        【内部函数】BPC_Combat
   ├─【1】退出格挡
   │        → BPI_Attribute.ExitGuard()              【接口】
   │        → BPI_ActionState.SetState(Locomotion)   【接口】
-  ├─【2】BPI_Combat.SetLastGuardEndTime(-9999)      【接口】清格挡 CD
+  ├─【2】BPI_ActionState.ClearGuardCD()             【接口】清格挡 CD（防御性，见（5））
   ├─【3】OpenCounterWindow(Block)                   【内部函数】开格挡反击窗口
   ├─【4】BPI_CombatFeedBack.PlayHitFeedback(        【接口】
   │           Outcome = Blocked,
@@ -168,24 +198,31 @@ HandlePerfectBlock(HitPoint)                        【内部函数】BPC_Combat
 
 | 变量 | 所在 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
-| `GuardCD` | `BPC_Combat` | float | 0.4 | 普通退出格挡后的冷却 |
-| `LastGuardEndTime` | `BPC_Combat` | float | -9999 | 上次退出格挡的时刻 |
+| `GuardCD` | `BPC_ActionState` | float | 0.4 | 普通退出格挡后的冷却（秒） |
+| `LastGuardEndTime` | `BPC_ActionState` | float | -9999 | 上次**退出格挡**的时刻 |
 
 **派生判断（不存 bool，避免状态量泄漏）：**
 
 ```
-bGuardOnCooldown = (Now - LastGuardEndTime) < GuardCD
+bGuardOnCooldown = (Get Game Time in Seconds - LastGuardEndTime) < GuardCD
 ```
 
-**⚠️ `LastGuardEndTime` 是 `BPC_Combat` 的变量，外部**不能直接写**，必须走接口：**
+**⚠️ 时间源用 `Get Game Time in Seconds`，不用 `Tick` 的 DeltaTime 累加** —— 顿帧会把该 Actor 的 DeltaTime 压到 0，用 DeltaTime 累加会让 CD 在顿帧时停走。
 
-```
-BPI_Combat.SetLastGuardEndTime(Time : float)
-   Player 主动松开格挡 → SetLastGuardEndTime(Now)        → 启动 CD
-   HandlePerfectBlock  → SetLastGuardEndTime(-9999)     → 清空 CD
-```
+**启动 / 清空路径表：**
 
-**⭐ 依赖方向：`BPC_Attribute` 是通用组件（敌人也有），不该反过来调 Player 特有的 `BPC_Combat`。所以"启动 CD"这件事放在 Player 侧的入口，Combat 只提供接口。**
+| 路径 | 时刻 | 动作 | 语义 |
+| --- | --- | --- | --- |
+| 主动松开格挡 | 退出瞬间 | `ActionState.UpdateGuardCD(Now)` | 普通代价 |
+| 普通格挡受击（BlockHit） | 播完保持 Guard | **不动** | 没退出格挡，不算一次"格挡结束" |
+| 完美格挡（`HandlePerfectBlock`） | 判定成功 | `ActionState.ClearGuardCD()` | **奖励，免冷却** |
+| 格挡被破防 | **破防 montage 播完** | `ActionState.UpdateGuardCD(Now)` | 最重惩罚 |
+| 普通受击破韧 | **收尾时刻** | `ActionState.UpdateGuardCD(Now)` | 同上 |
+
+**⚠️ 破防 / 破韧的 CD 从「收尾」起算，不能从判定瞬间起算：**  
+破防 montage 锁 0.7s > GuardCD 0.4s。如果在破韧瞬间就起算，CD 会在播放期间耗光，播完回 Locomotion 立刻就能格挡，等于没有惩罚。播完后起算，破防总惩罚 = 0.7s（montage）+ 0.4s（CD）≈ 1.1s。
+
+**⚠️ 依赖方向：** `BPC_Attribute` 是通用组件（敌人也有），不该反过来调 Player 特有的 `BPC_Combat`。所以 "启动 CD" 这件事放在 `BPC_ActionState`（状态层），`BPC_Combat` 只负责在合适的时机调用它。
 
 #### （6）格挡入口：只在原流程前加一道门槛
 
@@ -199,43 +236,43 @@ TryEnterState(Guard) → Attribute.EnterGuard() → 锁定动作
 
 ```
 TryGuard() → bool
-  ├─【1】Branch: BPI_ActionState.GetActionState() == Guard
-  │        → Return false                ← 已在格挡（用状态判断，最本质）
-  ├─【2】Branch: bGuardOnCooldown == true
-  │        → Return false                ← CD 内
-  └─【3】原流程：TryEnterState(Guard) → EnterGuard() → Return true
+  ├─【1】ActionState.CanGuard() == false ?
+  │        → ReturnValue = false       ← CD / 受控状态，一次判断全拦
+  ├─【2】GetActionState() == Guard ?
+  │        → ReturnValue = false       ← 已在格挡（状态查重）
+  ├─【3】TryEnterState(Guard)
+  │        ├─ false → ReturnValue = false   ← 转场矩阵拒绝（受控状态兜底）
+  │        └─ true  → 继续
+  ├─【4】Attribute.EnterGuard()          ← bIsGuarding = true，bPerfectBlockUsed = false
+  └─【5】ReturnValue = true
 ```
 
-**⚠️ 第 1 步用 `GetActionState() == Guard`，不要用 `bIsGuarding`：**
+**⚠️ 第 1 步放在 `CanGuard` 里做，把 CD + 受控状态合并判断；第 2 步保留在 `TryGuard` 做状态查重。**
 
-```
-ActionState.Guard   = 当前正在执行格挡动作     ← 判断"能不能再进格挡"用这个
-bIsGuarding         = 玩家仍持有格挡意图       ← 跨受击保留，用于伤害判定
-两者语义不同，不能互相替代
-```
+**⚠️ 第 1 步用 `ActionState.CanGuard()`，不要在 `TryGuard` 里自己读 `bGuardOnCooldown`（该变量不存在于 `BPC_Combat`，只在 `BPC_ActionState` 内部派生）。**
 
-**⭐ 玩家蓝图里不加任何新变量 —— `GuardCD` / `LastGuardEndTime` 全在 `BPC_Combat`，外部只调 `TryGuard()` 与 `SetLastGuardEndTime()`。**
+**⭐ 玩家蓝图里不加任何新变量 —— `GuardCD` / `LastGuardEndTime` 全在 `BPC_ActionState` 内部，外部只调 `TryGuard()`（启动）与 `ActionState.UpdateGuardCD` / `ClearGuardCD`（收尾）。**
 
 #### （7）完整时间轴
 
 ```
 t = 0.00   按下格挡
            ├─ BPI_Combat.TryGuard()
-           │    ├─ GetActionState() != Guard ✅
-           │    ├─ bGuardOnCooldown == false ✅
+           │    ├─ ActionState.CanGuard() == true ✅   ← CD + 受控状态
+           │    ├─ GetActionState() != Guard ✅        ← 状态查重
            │    └─ TryEnterState(Guard) → EnterGuard()
            │         └─ bIsGuarding = true，bPerfectBlockUsed = false
            └─ 进入格挡，锁定动作
 
 t = 0.10   敌人攻击命中
            └─ ReceiveDamage 第 ③ 条
-                ├─ 正面 ✅  Poise > 0 ✅  在 PerfectGuardWindow 内 ✅
+                ├─ 正面 ✅  Poise > 0 ✅  IsPerfectBlock() ✅
                 ├─ bPerfectBlockUsed == false → 置 true → Broadcast OnPerfectBlock(HitPoint)
                 └─ Return (Blocked, true, false)
 
            OnPerfectBlock(HitPoint) → HandlePerfectBlock()
                 ├─【1】退出格挡 → 回 Locomotion
-                ├─【2】SetLastGuardEndTime(-9999)      CD 清空
+                ├─【2】ActionState.ClearGuardCD()      CD 清空
                 ├─【3】OpenCounterWindow(Block)        窗口立刻开
                 ├─【4】PlayHitFeedback(Blocked, HitPoint, true, None, 0)
                 │        ├─ Shake(PerfectBlock, HitPoint, 2.0)   ← 强震屏
@@ -290,26 +327,44 @@ t = 0.90   CloseCounterWindow() → CounterType = None
 | `bPerfectBlockUsed` | bool | `EnterGuard` 复位，一次格挡段只奖励一次 |
 | `OnPerfectBlock(Vector3)` | **【事件】** 分发器 | 判定成功时广播，参数为 `HitPoint` |
 | `EnterGuard` / `ExitGuard` | **【接口实现】** 现有 | 内部逻辑不动 |
-| `PerfectGuardWindow` | 现有 | 完美窗口长度 |
+| `LastGuardTime` | float | `EnterGuard` 时记录，完美窗口区间的起点参照 |
+| `PerfectGuardWindowStart` / `PerfectGuardWindowEnd` | float | 完美窗口区间（**已取代旧的单值 `PerfectGuardWindow`**） |
+| `IsPerfectBlock()` | **【内部函数】** | `bIsGuarding` + 区间判断，判定口径唯一入口 |
+
+**`BPC_ActionState`（格挡 CD 在此，与闪避 CD 对称）：**
+
+| 名称 | 类型 | 说明 |
+| --- | --- | --- |
+| `GuardCD` | float | 0.4 |
+| `LastGuardEndTime` | float | -9999（**退出**格挡的时刻，不是起手） |
+| `CanGuard()` | **【接口实现】** | CD + 受控状态判断 |
+| `UpdateGuardCD(Time)` | **【接口实现】** | 记录退出时刻（启动 CD） |
+| `ClearGuardCD()` | **【接口实现】** | 清空（完美格挡调用） |
 
 **`BPC_Combat`：**
 
 | 名称 | 类型 | 说明 |
 | --- | --- | --- |
-| `GuardCD` | float | 0.4 |
-| `LastGuardEndTime` | float | -9999 |
 | `CounterType` | `E_CounterType` | 替代原 `bCounterWindowOpen` |
 | `CounterTypeUsed` | bool | 替代原 `bCounterUsed` |
-| `TryGuard()` | **【内部函数】** | 门槛 + 原流程 |
-| `SetLastGuardEndTime(Time)` | **【接口实现】** | 启动 / 清空格挡 CD |
+| `TryGuard()` | **【接口实现】** | 门槛（CanGuard + 状态查重 + TryEnterState） |
 | `HandlePerfectBlock(HitPoint)` | **【内部函数】** | 退格挡 + 清 CD + 开窗 + 顿帧 + 转发反馈 |
+
+**`BPI_ActionState`：**
+
+| 方法名 | 输入 | 输出 | 作用 |
+| --- | --- | --- | --- |
+| `CanGuard` | / | bool | **【接口】** CD 与受控状态判断 |
+| `UpdateGuardCD` | float（Time） | / | **【接口】** 启动格挡 CD（记录退出时刻） |
+| `ClearGuardCD` | / | / | **【接口】** 清空格挡 CD（完美格挡奖励） |
 
 **`BPI_Combat`：**
 
 | 方法名 | 输入 | 输出 | 作用 |
 | --- | --- | --- | --- |
-| `TryGuard` | / | bool | **【接口】** 格挡入口：状态判断 + CD 判断 + 原流程 |
-| `SetLastGuardEndTime` | float（Time） | / | **【接口】** 启动或清空格挡 CD（传 -9999 即清空） |
+| `TryGuard` | / | bool | **【接口】** 格挡入口：`CanGuard` + 状态查重 + 进状态 + `EnterGuard` |
+
+> `SetLastGuardEndTime` 已删除（接口与实现），格挡 CD 相关调用全部改走 `BPI_ActionState` 三个新接口。
 
 **`BPC_CameraDirector`（FOV 特写）：**
 
@@ -365,6 +420,8 @@ t = 0.90   CloseCounterWindow() → CounterType = None
 ```
 【判定】
 □ 正面格挡 + 完美窗口内 → 退回格挡、清 CD、开 Block 窗口
+□ 架刀瞬间（窗口 Start 之前）被打 → 普通格挡，不是完美（区间起点生效）
+□ 窗口 End 之后被打 → 普通格挡（区间终点生效）
 □ 三连击都在完美窗口内 → 只触发一次完美（bPerfectBlockUsed）
 □ 背面被打 → 不触发完美格挡
 □ Poise == 0 → 不触发完美格挡
@@ -373,18 +430,22 @@ t = 0.90   CloseCounterWindow() → CounterType = None
 □ 主动松开格挡后 0.4s 内按格挡 → TryGuard 返回 false
 □ 0.4s 后按格挡 → 正常进入
 □ 完美格挡后立刻按格挡 → 正常进入（CD 已清）
+□ 完美格挡后松开格挡键 → 不启动 CD（松开路径有「当前在 Guard」前提）
 □ 已在格挡中再按格挡 → TryGuard 返回 false
+□ 顿帧期间 CD 照常流逝（时间源为 World 时间）
 
 【反击窗口】
-□ 完美格挡后轻击 → BlockCounter_L1 → L2 → L3 → L4
-□ 完美格挡后重击 → BlockCounter_H1 → H2 → 空
+□ 完美格挡后轻击 → BlockCounter_L1 → L2
+□ 完美格挡后重击 → BlockCounter_H1 → H2
 □ 窗口过期后轻击 → Attack1
 □ 完美闪避在 Block 窗口期间触发 → CounterType 变 Dodge（闪避优先）
 □ Block 守在 Dodge 窗口期间触发 → CounterType 保持 Dodge，不降级
 □ 挨打 / 死亡 / 重新闪避 / 跳跃 → 窗口关闭
 
 【接口数】
-□ 本次新增 3 个：BPI_Combat +2（TryGuard / SetLastGuardEndTime）、BPI_CameraDirector +1（PlayPerfectBlockCloseUp）
+□ BPI_ActionState +3（CanGuard / UpdateGuardCD / ClearGuardCD）
+□ BPI_Combat −1（删 SetLastGuardEndTime）
+□ BPI_CameraDirector 不变（PlayPerfectBlockCloseUp 已计入 2 个）
 □ 当前总数以「0，接口总览」为准
 ```
 
@@ -405,8 +466,9 @@ t = 0.90   CloseCounterWindow() → CounterType = None
 ③ 格挡入口判断"是否已在格挡"要用 ActionState，不是 bIsGuarding
    但"受击结束后要不要回格挡"必须用 bIsGuarding（那时 ActionState 已经不是 Guard）
 
-④ LastGuardEndTime 只能通过 SetLastGuardEndTime 修改
-   BPC_Attribute 不该反向依赖 Player 特有的 BPC_Combat
+④ LastGuardEndTime 只能通过 ActionState.UpdateGuardCD / ClearGuardCD 修改
+   格挡 CD 已迁入 BPC_ActionState（与闪避 CD 对称三件套），
+   BPC_Combat 不再持有 GuardCD / LastGuardEndTime 变量
 
 ⑤ 顿帧不要用 SetGlobalTimeDilation，双方各调 PlayHitStop(Self)
    GlobalTimeDilation 会拖慢 Set Timer 的游戏时间 → 反击窗口被拉长
@@ -853,11 +915,11 @@ BPC_Combat 分流（按 HitOutCome）
 | 情况 | 走哪条路 | 经过 HandleGuardHit |
 | --- | --- | --- |
 | 完美格挡 | `OnPerfectBlock` → `HandlePerfectBlock` | ❌ |
-| 普通格挡 | `OnDamageApplied(Blocked)` → `HandleGuardHit` | ✅ |
-| 破韧（格挡被击碎） | Attribute 内部直接返回 `Hit` → `EnterHit` | ❌ |
+| 普通格挡（未破韧） | `OnDamageApplied(Blocked)` → `HandleGuardHit`（PoiseBroken=false） | ✅ |
+| 格挡被破防 | `OnDamageApplied(Blocked)` → `HandleGuardHit`（PoiseBroken=true）→ 破防分支 | ✅（内部再分，见（14）） |
 | 完美闪避 / 无敌帧 / 死亡 | 不触发 `OnDamageApplied` | ❌ |
 
-**所以 `HandleGuardHit` 只处理「未破韧的普通格挡」，不需要破韧分支。**
+**所以 `HandleGuardHit` 会收到两条路径（普通 / 破防），在内部按 `PoiseBroken` 二分：破防走（14），普通走本节。**
 
 ##### 13.4 交互约束
 
@@ -965,10 +1027,73 @@ Montage_BlockHit 的 Slot：DefaultGroup.UpperBody
 □ 移动中格挡受击：下半身继续走，不滑步
 □ 站定格挡受击：下半身格挡站姿不动
 □ 连续格挡：montage 重播不报错
-□ 破韧一击：走 EnterHit(HitLight)，不经过 HandleGuardHit
+□ 普通受击破韧（未格挡）：走 EnterHit(HitHeavy)，收尾启动格挡 CD
+□ 格挡被破防：走 HandleGuardHit 破防分支（见（14）），收尾启动格挡 CD
 □ 完美格挡：走 HandlePerfectBlock，不经过 HandleGuardHit
 □ 完美闪避 / 无敌帧 / 死亡：不触发 OnDamageApplied，无残留
 ```
 
 ---
 
+#### （14）格挡破防：已实现
+
+格挡成功但 Poise 已耗尽（Blocked + IsBroken = true），防御被击碎。
+
+##### 14.1 链路
+
+`
+敌人攻击命中玩家（格挡中且被击破）
+   ↓
+BPC_Attribute.ReceiveDamage 第 ③ 条
+  格挡 + 正面 + Poise>0 → 削轫扣到 0
+   ↓
+Return (Blocked, false, true)      ← HitOutCome=Blocked，IsBroken=true
+   ↓
+OnDamageApplied.Broadcast(Blocked, HitDirection, true)
+   ↓
+BPC_Combat.HandleGuardHit(PoiseBroken=true)
+   ├─【1】bGuardLockPending = true        ← 标记收尾要启动 CD
+   ├─【2】Attribute.ExitGuard()           ← bIsGuarding = false
+   ├─【3】BPI_ActionState.TryEnterState(HitHeavy)
+   │       ↓
+   │   若失败 → SetState(Locomotion)（受控状态兜底）
+   │   若成功 → 进入 HitHeavy（受控态，锁住移动/攻击/闪避/格挡）
+   ├─【4】播放 GuardBreak montage（DT_Reactions 查 "GuardBreak" 行，Slot=DefaultSlot）
+   │       ↓
+   │   播完（SetState(Locomotion) 处）：
+   │   ├─ ActionState.UpdateGuardCD(Get Game Time in Seconds)   ← CD 从收尾起算
+   │   └─ bGuardLockPending = false
+`
+
+**两条破韧路径都走收尾启动 CD：**
+
+`	ext
+格挡被破防：Blocked + true → HandleGuardHit → GuardBreak → 收尾启动 CD
+普通受击破韧：Hit + true   → EnterHit（HitHeavy）→ 收尾启动 CD
+`
+
+**关键：CD 不是破韧瞬间调 UpdateGuardCD(Now)，而是播完收尾时调。**  
+破防 montage 锁 0.7s > GuardCD 0.4s。播之前起算 → CD 在蒙太奇期间耗光，播完立刻能格挡，等于没有惩罚。
+
+**破防 Montage 用全身 Slot（不是 UpperBody）：**
+
+`
+Montage_BlockHit   → UpperBody Slot（普通格挡受击，只动上半身）
+Montage_GuardBreak → DefaultSlot 全身（骨盆 + 双腿都要动，表现"防御被击碎"）
+`
+
+**收尾回 State：** 播完 SetState(Locomotion)，不走 SetState(Guard) —— 破防后不自动重进格挡，玩家需松开再按（若 CD 已过）。
+
+##### 14.2 验证清单
+
+`
+□ 格挡被击破：ActionState 进入 HitHeavy，播放全身破防 montage，不播 BlockHit
+□ 破防期间按格挡键：无效（受控状态拦下）
+□ 破防播完：回 Locomotion，0.4s 内再按格挡 → 无效（CD 起算于收尾）
+□ 0.4s 后：可重新进入格挡
+□ 普通受击破韧（未格挡）：同样收尾启动 CD，播完 0.4s 内不可格挡
+□ 破防不进入完美格挡分支，不开反击窗口，不播 FOV 特写
+□ 攻击方反馈：PlayHitFeedback(Blocked, bPoiseBroken=true) → Break 震屏、破防音
+`
+
+---

@@ -53,6 +53,9 @@ BPC_CameraDirector      项目自研的相机控制组件 —— 锁定、震动
 | CanDodge        | /                       | bool          | 当前是否可以冲刺（受 CD 与非受控状态约束）                   |
 | UpdateDodgeCD   | float（Time）             | /             | 记录冲刺起手时刻，用于 CD 判定                         |
 | ClearDodgeCD    | /                       | /             | 清空冲刺冷却。**仅供完美闪避调用**，让玩家立刻可以再闪              |
+| CanGuard        | /                       | bool          | 当前是否可以格挡（受 CD 与非受控状态约束）                   |
+| UpdateGuardCD   | float（Time）             | /             | 记录格挡退出时刻，启动格挡 CD                            |
+| ClearGuardCD    | /                       | /             | 清空格挡冷却。**仅供完美格挡调用**                       |
 
 **三个转换入口的分工：**
 
@@ -101,12 +104,14 @@ CanTransitionTo(NewState)
 | GetCurrentAttack | /    | ST_AttackData | 获取当前动作的数据      |
 | OnAttackWindow   | bool | /             | 开关攻击窗口（由 ANS_AttackWindow 触发） |
 | EnterHit         | E_ActionState，E_HitDirection | /   | 进入受击处理（由 Attribute 的 OnDamageApplied 触发） |
-| TryGuard         | /    | bool          | 格挡入口：状态判断 + CD 判断 + 原流程。**门槛统一在这里，玩家蓝图不存变量** |
-| SetLastGuardEndTime | float（Time） | /   | 启动或清空格挡 CD（传 -9999 即清空）。**格挡 CD 只由这个接口修改** |
+| TryGuard         | /    | bool          | 格挡入口：`CanGuard`（CD + 受控）+ 状态查重 + 进状态 + `EnterGuard`。**门槛统一在这里，玩家蓝图不存变量** |
 
 > **位移不再经过 Combat。** `ANS_Move` 直接调 `BPI_Motor.StartMotion` / `StopMotion`，
 > Combat 只负责在动作开始时用 `SetMotionProfile` 下发速度和方向。
 > 原先的 `MoveStart` / `MoveEnd` 两个纯转发函数已删除。
+
+> **格挡 CD 已迁入 `BPI_ActionState`**（与闪避 CD 对称）：`CanGuard` / `UpdateGuardCD` / `ClearGuardCD`。
+> 原 `BPI_Combat.SetLastGuardEndTime` 已删除。
 
 #### （6）BPI_LockOn
 

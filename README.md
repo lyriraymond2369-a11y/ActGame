@@ -41,6 +41,7 @@ README 负责项目入口、历史、规范和接口总览；功能细节按模�
 | 2026.11.17 | 上半身分离实现 | `ABP_Player` 接入 Layered Blend per Bone + UpperBody Slot（**仅上半身，下半身层未实现**）：`Montage_BlockHit` 改走 `DefaultGroup.UpperBody`，上半身受击、下半身保持 BlockState，滑步修复；三条硬约束（混合深度必须 0、`DefaultSlot` 必须在 LayeredBlend 之后、`MainPose` 缓存只包状态机输出）记入 8-3（13.5）；插槽管理器注册 `UpperBody` | 作者 |
 | 2026.11.17 | 结构文档补全 | 新增 3-0「敌人 vs 玩家双轨制」：敌人不挂 `BPC_Combat`，BT/BTS/BTT 决策、`BPC_AttackTrace` 只做 montage 播放 + BB 写入；规范 1 新增⑥「战斗反馈由攻击方发起、镜头一律玩家」（单玩家视角的有意简化，双人/内讧需改路由）；13.4 震屏链路写明攻击方调 `PlayHitFeedback` → 无条件取玩家 CameraDirector；遗留问题⑬标注玩家/敌人死亡流程未设计；反应表资产名统一记录为 `DT_Reactions` | 作者 |
 | 2026.11.17 | 文档拆分 | README 瘦身为「入口 / 历史 / 规范 / 接口总览」，模块内容按 12 个文件拆分到 `docs/`：01 CharacterBase、02 Player、03 EnemyBase、04 WeaponBase、05 独立接口、06 动画通知、07 敌人受击、08 完美闪避、09 完美格挡、10 其他功能、11 运行导图、12 校对清单；00 接口总览保留在 README | 作者 |
+| 2026.11.17 | 格挡破防与完美窗口区间化 | 普通格挡受击 + 破防双分支：`OnDamageApplied` 先分 `HitOutCome`，`Blocked` 内再按 `PoiseBroken` 二分 —— 破防走 `HandleGuardHit(PoiseBroken=true)` → ExitGuard → HitHeavy → 全身 `GuardBreak` montage → 收尾回 Locomotion；完美窗口改为区间 `PerfectGuardWindowStart/End` + `IsPerfectBlock()`（架刀瞬间不再算完美）；格挡 CD 从 `BPC_Combat` 迁入 `BPC_ActionState`（`CanGuard` / `UpdateGuardCD` / `ClearGuardCD`，与闪避 CD 对称），删除 `BPI_Combat.SetLastGuardEndTime`；两类破韧（Blocked+Broken / Hit+Broken）收尾均启动格挡 CD；接口数 99 → 101（ActionState 8→11、Combat 9→8） | 作者 |
 
 ---
 
@@ -93,7 +94,7 @@ README 负责项目入口、历史、规范和接口总览；功能细节按模�
    需要外部调用 → 先在 BPI 里加方法，再在组件里实现
 
 ④ 数据的读取与写入同样走接口
-   例：LastGuardEndTime 只能通过 BPI_Combat.SetLastGuardEndTime 修改
+   例：LastGuardEndTime 只能通过 BPI_ActionState.UpdateGuardCD / ClearGuardCD 修改
        外部直接写变量会让 CD 逻辑分叉到两处
 
 ⑤ 跨组件链路要沿既定的中转走，不要抄近道
@@ -127,7 +128,7 @@ README 负责项目入口、历史、规范和接口总览；功能细节按模�
 | **【事件】** | 分发器 / 自定义事件 | ❌ |
 | **【引擎 API】** | UE 自带节点 | ❌ |
 
-**⭐ 「接口数 99」只统计【接口】，其余三类都不计。**
+**⭐ 「接口数 101」只统计【接口】，其余三类都不计。**
 
 ### 3）组件实现约束
 
@@ -250,16 +251,16 @@ README 负责项目入口、历史、规范和接口总览；功能细节按模�
 | BPI_WeaponBase           | Code/Weapon                        | 3   | BP_WeaponBase      |
 | BPI_GameState            | Code/GameState                     | 3   | 待接入                |
 | BPI_Player               | Player                             | 12  | BP_Player          |
-| BPI_ActionState          | Player/Component/ActionState       | 8   | BPC_ActionState    |
+| BPI_ActionState          | Player/Component/ActionState       | 11  | BPC_ActionState    |
 | BPI_BufferInput          | Player/Component/BufferInput       | 3   | BPC_BufferInput    |
 | BPI_CameraDirector       | Player/Component/CameraDirector    | 2   | BPC_CameraDirector |
-| BPI_Combat               | Player/Component/Combat            | 9   | BPC_Combat         |
+| BPI_Combat               | Player/Component/Combat            | 8   | BPC_Combat         |
 | BPI_LockOn               | Player/Component/LockOn            | 5   | BPC_LockOn         |
 | BPI_EnemyBase            | Enemy                              | 2   | BP_EnemyBase       |
 | BPI_AttackTrace          | Enemy/Component/AttackTrace        | 3   | BPC_AttackTrace    |
 | BPI_AI                   | Enemy/Component/AI                 | 9   | BPC_AI             |
 
-合计 99 个接口函数。
+合计 101 个接口函数。
 
 ---
 
