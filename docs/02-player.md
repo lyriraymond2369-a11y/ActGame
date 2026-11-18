@@ -86,6 +86,55 @@ CanTransitionTo(NewState)
 | Comsume | E_InputType | bool | 读取缓存中的指定输入，并返回是否成功 |
 | Peek    | E_InputType | bool | 看缓存中是否有指定且没过期的输入   |
 
+#### 输入映射：Shift 双功能（点按闪避 / 长按奔跑）
+
+| 项目 | 内容 |
+| --- | --- |
+| 物理键 | 左 Shift（唯一）；`IA_Run` / `IA_Dodge` 已删除，只保留 `IA_Shift` |
+| 奔跑 | `Locomotion` 内的速度档位（`E_MoveState.Run`），持续状态，**不进** `BufferInput` |
+| 闪避 | 输入事件（`E_InputType.Dodge`），Push 进 `BufferInput` |
+| 阈值 | `ShiftPressThreshold = 0.2s`（松开瞬间时长小于阈值 → 闪避；大于等于 → 奔跑/松手） |
+
+**增强输入事件已全部移除，改为 BP_Player 的 `Tick` 纯轮询 `IA_Shift`（`IsPressed` / `GetBoundActionValue`），仅有一处写入：**
+
+```
+Tick 每帧：
+  ├─ Pressed = 轮询 IA_Shift
+  ├─ Pressed && !bWasShiftPressed
+  │     → ShiftPressStartTime = Now            （ShiftPressStartTime 唯一写入点）
+  ├─ !Pressed && bWasShiftPressed
+  │     → Elapsed = Now - ShiftPressStartTime
+  │       Elapsed < 0.2 ? → Push(E_Dodge)（闪避；方案 A：格挡中先 ExitGuard，不回格挡）
+  ├─ 奔跑判定：Pressed && (Now - ShiftPressStartTime) >= 0.2 && 有移动输入
+  │     → E_MoveState = Run
+  └─ bWasShiftPressed = Pressed
+```
+
+**为什么纯轮询、不保留增强输入事件：**
+
+```
+事件（Completed）→ Push BufferInput → 下一帧 Tick 消费，两跳 = 两帧延迟
+纯轮询在松开当帧完成判定并直接 DoDodge，零帧延迟，适合点按闪避
+
+⚠️ 边界：
+① 单帧内按又松（<~16ms）轮询会漏；人类点按普遍 > 30ms，可接受
+② 轮询依赖映射上下文已添加（BeginPlay），未添加表现为 Shift 完全无响应，不报错
+③ ShiftPressStartTime 初始 -9999，读取时加 > 0 守卫，防止未按过误判奔跑
+```
+
+**方案 A 行为：**
+
+```
+点按 Shift（<0.2s）= 闪避
+  └─ 格挡中短按 → 直接取消格挡进入闪避（主动设计）
+  └─ 闪避收尾回 Locomotion，不回格挡（ExitGuard，bIsGuarding = false）
+     想继续格挡必须松开重按 TryGuard
+
+长按 Shift（≥0.2s）= 奔跑
+  └─ E_MoveState = Run；松开自动回 Walk/Idle
+  └─ 无移动输入时 → Idle，不误入奔跑
+```
+
 #### （4）BPI_CameraDirector
 
 | 方法名   | 输入                              | 输出  | 作用                           |
