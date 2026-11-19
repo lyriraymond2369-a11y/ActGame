@@ -54,7 +54,7 @@
 
 | 输出              | 含义                                        |
 | --------------- | ----------------------------------------- |
-| HitOutCome      | `Ignore` 无伤 / `Hit` 普通受击 / `Blocked` 格挡生效 |
+| HitOutCome      | `Ignore` 无伤 / `Hit` 普通受击 / `Blocked` 格挡生效 / `BreakPoise` **格挡被击碎（防御崩坏）** |
 | bPerfectBlock   | 是否完美格挡（完全免伤）                              |
 | IsBroken        | **本次攻击是否破韧** —— 直通 `TakeDamage` 的返回值，不再存成员变量 |
 | bPerfectDodge   | 是否完美闪避（在无敌帧内**且**处于完美窗口）                  |
@@ -67,8 +67,9 @@
      且在完美窗口内              → Ignore + bPerfectDodge = true
      仅无敌、不在完美窗口        → Ignore，bPerfectDodge = false
 ③ 格挡 + 正面 + Poise>0         → 完美格挡窗口内？Blocked + bPerfectBlock 免伤
+                                  削轫扣到 0？BreakPoise（格挡被击碎，IsBroken=true）
                                   否则 Blocked，伤害 ×(1−GuardDamageReduction)，削轫 ×GuardPoiseScale
-④ 其余（含背面格挡）             → Hit，伤害 ×(1−Defense)
+④ 其余（含背面格挡）             → Hit，伤害 ×(1−Defense)（普通命中破韧时 IsBroken=true）
 ```
 
 **② 的两个条件是 `AND`：只判时间会把闪避结束后的受击误判成完美；只判无敌会把整个无敌区间都算成完美，缓冲带就没了。**
@@ -183,6 +184,7 @@ PlayPerfectDodgeEndSound() 【内部函数】
 | Ignore  | 忽略   |
 | Hit     | 普通受击 |
 | Blocked | 防御   |
+| BreakPoise | 格挡被击碎（防御崩坏，格挡在正面 Poise>0 时被打破） |
 
 ##### 三，E_HitDirection
 

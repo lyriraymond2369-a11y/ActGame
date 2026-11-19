@@ -216,8 +216,8 @@ bGuardOnCooldown = (Get Game Time in Seconds - LastGuardEndTime) < GuardCD
 | 主动松开格挡 | 退出瞬间 | `ActionState.UpdateGuardCD(Now)` | 普通代价 |
 | 普通格挡受击（BlockHit） | 播完保持 Guard | **不动** | 没退出格挡，不算一次"格挡结束" |
 | 完美格挡（`HandlePerfectBlock`） | 判定成功 | `ActionState.ClearGuardCD()` | **奖励，免冷却** |
-| 格挡被破防 | **破防 montage 播完** | `ActionState.UpdateGuardCD(Now)` | 最重惩罚 |
-| 普通受击破韧 | **收尾时刻** | `ActionState.UpdateGuardCD(Now)` | 同上 |
+| 格挡被击碎（`BreakPoise` → `HandleGuardBreak`） | **破防 montage 播完** | `ActionState.UpdateGuardCD(Now)` | 最重惩罚 |
+| 普通受击破韧（`Hit` + `IsBroken`） | **收尾时刻** | `ActionState.UpdateGuardCD(Now)` | 同上 |
 
 **⚠️ 破防 / 破韧的 CD 从「收尾」起算，不能从判定瞬间起算：**  
 破防 montage 锁 0.7s > GuardCD 0.4s。如果在破韧瞬间就起算，CD 会在播放期间耗光，播完回 Locomotion 立刻就能格挡，等于没有惩罚。播完后起算，破防总惩罚 = 0.7s（montage）+ 0.4s（CD）≈ 1.1s。
@@ -865,14 +865,11 @@ DamageScale / PoiseScale 伤害与削轫
 BPC_Attribute.ReceiveDamage 第 ③ 条
   格挡 + 正面 + Poise>0 + 不在完美窗口 → Blocked
    ↓
-OnDamageApplied.Broadcast(Blocked, HitDirection, bPoiseBroken)
+OnDamageApplied.Broadcast(Blocked, HitDirection)
    ↓
 BPC_Combat 分流（按 HitOutCome）
-   ├─ Hit     → EnterHit（受击硬直）
-   └─ Blocked → HandleGuardHit
-                  ├─ DT_Reactions 查 "BlockHit" 行
-                  └─ PlayReactionMontage(Data, bReliefOriginal = true)
-                       └─ 播完：true → 什么都不做（保持 Guard）；false → SetState(Locomotion)
+   ├─ Hit      → EnterHit（受击硬直；普通命中破韧时 IsBroken=true 单独处理）
+   └─ Blocked  → HandleGuardHit（普通格挡，播 BlockHit，播完保持 Guard）
 ```
 
 **`bReliefOriginal` 复用**：`EnterHit` 也调 `PlayReactionMontage`，传 `false` → 播完回 Locomotion；格挡受击传 `true` → 播完保持原状态（Guard）。两个场景共用一条播放链路，只在「播完去哪」分叉。
@@ -915,11 +912,11 @@ BPC_Combat 分流（按 HitOutCome）
 | 情况 | 走哪条路 | 经过 HandleGuardHit |
 | --- | --- | --- |
 | 完美格挡 | `OnPerfectBlock` → `HandlePerfectBlock` | ❌ |
-| 普通格挡（未破韧） | `OnDamageApplied(Blocked)` → `HandleGuardHit`（PoiseBroken=false） | ✅ |
-| 格挡被破防 | `OnDamageApplied(Blocked)` → `HandleGuardHit`（PoiseBroken=true）→ 破防分支 | ✅（内部再分，见（14）） |
+| 普通格挡（未破韧） | `OnDamageApplied(Blocked)` → `HandleGuardHit` | ✅ |
+| 格挡被击碎 | `OnDamageApplied(BreakPoise)` → `HandleGuardBreak` | ❌ |
 | 完美闪避 / 无敌帧 / 死亡 | 不触发 `OnDamageApplied` | ❌ |
 
-**所以 `HandleGuardHit` 会收到两条路径（普通 / 破防），在内部按 `PoiseBroken` 二分：破防走（14），普通走本节。**
+**所以 `HandleGuardHit` 只处理「未破韧的普通格挡」；「格挡被击碎」由 `BreakPoise` 单独路由，不再在 `HandleGuardHit` 内部按 `PoiseBroken` 二分。**
 
 ##### 13.4 交互约束
 
@@ -1028,7 +1025,7 @@ Montage_BlockHit 的 Slot：DefaultGroup.UpperBody
 □ 站定格挡受击：下半身格挡站姿不动
 □ 连续格挡：montage 重播不报错
 □ 普通受击破韧（未格挡）：走 EnterHit(HitHeavy)，收尾启动格挡 CD
-□ 格挡被破防：走 HandleGuardHit 破防分支（见（14）），收尾启动格挡 CD
+□ 格挡被击碎：走 HandleGuardBreak（见（14）），收尾启动格挡 CD
 □ 完美格挡：走 HandlePerfectBlock，不经过 HandleGuardHit
 □ 完美闪避 / 无敌帧 / 死亡：不触发 OnDamageApplied，无残留
 ```
@@ -1037,63 +1034,65 @@ Montage_BlockHit 的 Slot：DefaultGroup.UpperBody
 
 #### （14）格挡破防：已实现
 
-格挡成功但 Poise 已耗尽（Blocked + IsBroken = true），防御被击碎。
+格挡成功但 Poise 已耗尽（防御崩坏），通过 `HitOutCome = BreakPoise` 判定，不再走 `Blocked` 分支。
 
 ##### 14.1 链路
 
-`
+```
 敌人攻击命中玩家（格挡中且被击破）
    ↓
 BPC_Attribute.ReceiveDamage 第 ③ 条
   格挡 + 正面 + Poise>0 → 削轫扣到 0
    ↓
-Return (Blocked, false, true)      ← HitOutCome=Blocked，IsBroken=true
+Return (BreakPoise, false, true)   ← HitOutCome=BreakPoise，IsBroken=true
    ↓
-OnDamageApplied.Broadcast(Blocked, HitDirection, true)
+OnDamageApplied.Broadcast(BreakPoise, HitDirection)
    ↓
-BPC_Combat.HandleGuardHit(PoiseBroken=true)
-   ├─【1】bGuardLockPending = true        ← 标记收尾要启动 CD
-   ├─【2】Attribute.ExitGuard()           ← bIsGuarding = false
-   ├─【3】BPI_ActionState.TryEnterState(HitHeavy)
-   │       ↓
-   │   若失败 → SetState(Locomotion)（受控状态兜底）
-   │   若成功 → 进入 HitHeavy（受控态，锁住移动/攻击/闪避/格挡）
-   ├─【4】播放 GuardBreak montage（DT_Reactions 查 "GuardBreak" 行，Slot=DefaultSlot）
-   │       ↓
-   │   播完（SetState(Locomotion) 处）：
-   │   ├─ ActionState.UpdateGuardCD(Get Game Time in Seconds)   ← CD 从收尾起算
-   │   └─ bGuardLockPending = false
-`
+BPC_Combat 分流（按 HitOutCome）
+   └─ BreakPoise → HandleGuardBreak
+                    ├─【1】bGuardLockPending = true        ← 标记收尾要启动 CD
+                    ├─【2】Attribute.ExitGuard()           ← bIsGuarding = false
+                    ├─【3】BPI_ActionState.TryEnterState(HitHeavy)
+                    │       ↓
+                    │   若失败 → SetState(Locomotion)（受控状态兜底）
+                    │   若成功 → 进入 HitHeavy（受控态，锁住移动/攻击/闪避/格挡）
+                    ├─【4】播放 GuardBreak montage（DT_Reactions 查 "GuardBreak" 行，Slot=DefaultSlot）
+                    │       ↓
+                    │   播完（SetState(Locomotion) 处）：
+                    │   ├─ ActionState.UpdateGuardCD(Get Game Time in Seconds)   ← CD 从收尾起算
+                    │   └─ bGuardLockPending = false
+```
 
 **两条破韧路径都走收尾启动 CD：**
 
-`	ext
-格挡被破防：Blocked + true → HandleGuardHit → GuardBreak → 收尾启动 CD
-普通受击破韧：Hit + true   → EnterHit（HitHeavy）→ 收尾启动 CD
-`
+```text
+格挡被击碎：BreakPoise → HandleGuardBreak → GuardBreak → 收尾启动 CD
+普通受击破韧：Hit + IsBroken → EnterHit（HitHeavy）→ 收尾启动 CD
+```
 
 **关键：CD 不是破韧瞬间调 UpdateGuardCD(Now)，而是播完收尾时调。**  
 破防 montage 锁 0.7s > GuardCD 0.4s。播之前起算 → CD 在蒙太奇期间耗光，播完立刻能格挡，等于没有惩罚。
 
 **破防 Montage 用全身 Slot（不是 UpperBody）：**
 
-`
+```text
 Montage_BlockHit   → UpperBody Slot（普通格挡受击，只动上半身）
-Montage_GuardBreak → DefaultSlot 全身（骨盆 + 双腿都要动，表现"防御被击碎"）
-`
+Montage_GuardBreak → DefaultSlot 全身（骨盆 + 双腿都要动，表现“防御被击碎”）
+```
 
-**收尾回 State：** 播完 SetState(Locomotion)，不走 SetState(Guard) —— 破防后不自动重进格挡，玩家需松开再按（若 CD 已过）。
+**收尾回 State：** 播完 `SetState(Locomotion)`，不走 `SetState(Guard)` —— 破防后不自动重进格挡，玩家需松开再按（若 CD 已过）。
 
 ##### 14.2 验证清单
 
-`
-□ 格挡被击破：ActionState 进入 HitHeavy，播放全身破防 montage，不播 BlockHit
+```
+□ 格挡被击碎：ActionState 进入 HitHeavy，播放全身破防 montage，不播 BlockHit
 □ 破防期间按格挡键：无效（受控状态拦下）
 □ 破防播完：回 Locomotion，0.4s 内再按格挡 → 无效（CD 起算于收尾）
 □ 0.4s 后：可重新进入格挡
 □ 普通受击破韧（未格挡）：同样收尾启动 CD，播完 0.4s 内不可格挡
 □ 破防不进入完美格挡分支，不开反击窗口，不播 FOV 特写
-□ 攻击方反馈：PlayHitFeedback(Blocked, bPoiseBroken=true) → Break 震屏、破防音
-`
+□ 攻击方反馈：PlayHitFeedback(BreakPoise) → Break 震屏、破防音
+□ 数据行：DT_Reactions 查 "GuardBreak" 行，PlayHitFeedback 里单独配置 PoiseBreak 音效资产
+```
 
 ---
