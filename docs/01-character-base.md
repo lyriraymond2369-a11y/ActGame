@@ -40,8 +40,10 @@
 | GetTeam          | /                                    | E_Team                  | 获取阵营。`Neutral` / `Player` / `Enemy`，用于敌我判定         |
 | AddBonus         | float（AttackDelta）                   | /                      | 添加武器加成                                          |
 | IsDead           | /                                    | bool（Dead）             | 角色是否死亡                                          |
-| TakeDamage       | float（BaseDamage），float（PoiseDamage） | bool（bIsBroken）        | 扣血扣韧，返回是否破韧。**内部不再乘防御**                         |
-| ReceiveDamage    | ST_AttackData，float，Vector3（攻击者位置），Vector3（HitPoint），float | E_HitOutCome，bool，bool，bool | 完整受击判定：攻击数据、基础伤害、攻击者位置、击中点、基础削轫 → 受击类型、是否完美格挡、**是否破韧**、是否完美闪避 |
+| TakeDamage       | float（BaseDamage），float（PoiseDamage），float（PostureDamage） | bool（bIsBroken），bool（bPostureBroken） | **纯执行器**：只扣血/韧/架势并返回两个布尔，不做任何减免或倍率计算。最终数值全在 `ReceiveDamage` 里算好传入 |
+| ReceiveDamage    | ST_AttackData，float，Vector3（攻击者位置），Vector3（HitPoint），float（BasePoiseDamage），float（BasePostureDamage） | E_HitOutCome，bool，bool，bool | 完整受击判定：攻击数据、基础伤害、攻击者位置、击中点、基础削轫、基础架势伤害 → 受击类型、是否完美格挡、**是否破韧**、是否完美闪避 |
+| GetPostureAttack | /                                    | float（PostureAttack）   | 获取角色的架势攻击力（含武器加成），由攻击方在调用 `ReceiveDamage` 时传入 `BasePostureDamage` |
+| ReliefPosture    | /                                    | /                      | 架势自动恢复满值。**离开 KnockDown 收尾、脱战恢复等统一入口**（不暴露 `MaxPosture`） |
 | ClearPoseBroken  | /                                    | /                      | 清除削轫破防效果                                        |
 | RestorePoise     | /                                    | /                      | 恢复韧性到 MaxPoise（Tick 里调用）                        |
 | EnterGuard       | /                                    | /                      | 进入格挡：置 bIsGuarding，记录 LastGuardTime             |
@@ -54,10 +56,18 @@
 
 | 输出              | 含义                                        |
 | --------------- | ----------------------------------------- |
-| HitOutCome      | `Ignore` 无伤 / `Hit` 普通受击 / `Blocked` 格挡生效 / `BreakPoise` **格挡被击碎（防御崩坏）** |
+| HitOutCome      | `Ignore` 无伤 / `Hit` 普通受击 / `Blocked` 格挡生效 / `BreakPoise` 格挡中韧性归零 / `BreakPosture` **架势归零（防御崩坏）** |
 | bPerfectBlock   | 是否完美格挡（完全免伤）                              |
-| IsBroken        | **本次攻击是否破韧** —— 直通 `TakeDamage` 的返回值，不再存成员变量 |
+| IsBroken        | **本次攻击是否破韧**（Poise 归零）—— 直通 `TakeDamage` 的返回值，不再存成员变量 |
 | bPerfectDodge   | 是否完美闪避（在无敌帧内**且**处于完美窗口）                  |
+
+**`BreakPoise` 与 `BreakPosture` 是两条平行线：**
+
+```
+BreakPoise   = 格挡中 Poise 归零 → HandleGuardBreak → HitHeavy + GuardBreak 蒙太奇（韧性逻辑）
+BreakPosture = Posture 归零（格挡或命中共通）→ HandleBreakPosture → KnockDown（架势逻辑）
+两者同时归零 → BreakPosture 优先（KnockDown 比 HitHeavy 高一级）
+```
 
 **判定优先级（顺序不能调）：**
 
@@ -66,10 +76,19 @@
 ② 无敌中（bInvincible 或 无敌尾巴）
      且在完美窗口内              → Ignore + bPerfectDodge = true
      仅无敌、不在完美窗口        → Ignore，bPerfectDodge = false
-③ 格挡 + 正面 + Poise>0         → 完美格挡窗口内？Blocked + bPerfectBlock 免伤
-                                  削轫扣到 0？BreakPoise（格挡被击碎，IsBroken=true）
-                                  否则 Blocked，伤害 ×(1−GuardDamageReduction)，削轫 ×GuardPoiseScale
-④ 其余（含背面格挡）             → Hit，伤害 ×(1−Defense)（普通命中破韧时 IsBroken=true）
+③ 格挡 + 正面 + Poise>0         → 完美格挡窗口内？Blocked + bPerfectBlock 免伤（架势不扣）
+                                  否则：最终伤害 = Base×(1−GuardDamageReduction)
+                                        最终削轫 = BasePoiseDamage × GuardPoiseScale
+                                        最终架势 = BasePostureDamage
+                                        TakeDamage(三者) →
+                                          bPostureBroken？→ BreakPosture
+                                          bIsBroken？     → BreakPoise
+                                          否则            → Blocked
+④ 其余（含背面格挡）             → 最终伤害 = Base×(1−Defense)，削轫/架势原值
+                                  TakeDamage(三者) →
+                                    bPostureBroken？→ BreakPosture（优先于 HitHeavy）
+                                    bIsBroken？     → Hit + IsBroken=true
+                                    否则            → Hit
 ```
 
 **② 的两个条件是 `AND`：只判时间会把闪避结束后的受击误判成完美；只判无敌会把整个无敌区间都算成完美，缓冲带就没了。**
@@ -84,7 +103,7 @@ ReceiveDamage 把它直通为 IsBroken 输出，不再维护 bPoiseBroken 成员
 
 **⭐ 这是「规范 · 状态表达」第 ② 条的直接应用：能从函数返回值得到的，不要额外存 bool。**
 
-**五个输入的分工：**
+**六个输入的分工：**
 
 | 输入 | 参与判定 | 用途 |
 | --- | --- | --- |
@@ -93,6 +112,7 @@ ReceiveDamage 把它直通为 IsBroken 输出，不再维护 bPoiseBroken 成员
 | `攻击者位置` | ✅ | **算受击方向**（正面 / 背面 / 左 / 右） |
 | `HitPoint` | ❌ | **只用于表现**：火花位置、震屏位置、FOV 特写锚点 |
 | `BasePoiseDamage` | ✅ | 基础削轫 |
+| `BasePostureDamage` | ✅ | 基础架势伤害（攻击方传 `GetPostureAttack()`） |
 
 **⭐ `攻击者位置` 与 `HitPoint` 是两个不同的量，不能互相替代：**
 
@@ -108,6 +128,33 @@ HitPoint   → 判断「打在哪里」       → 决定火花生成在哪里
 **⚠️ `HitPoint` 不参与任何判定，加它只是为了让表现层有正确的锚点。**
 
 **韧性为 0 时格挡完全失效，完美格挡也一并失效。**
+
+**架势（Posture）与韧性平行、独立结算：**
+
+```
+Posture 满值 = 稳，0 = 崩（初始 = MaxPosture）
+格挡与命中都扣架势（命中扣得更多），归零 → BreakPosture → KnockDown
+与 Poise 互不替代：Poise 归零走 HitHeavy/GuardBreak，Posture 归零走 KnockDown
+```
+
+| 变量 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `Posture` | float | 100 | 当前架势（初始 = `MaxPosture`） |
+| `MaxPosture` | float | 100 | 上限 |
+| `PostureAttack` | float | 10 | 攻击方的架势攻击力（含武器加成，`GetPostureAttack` 读取） |
+| `LastCombatTime` | float | -9999 | 最后一次参与战斗的时刻（脱战判定） |
+| `CombatDisengageTime` | float | 5.0 | 多久无战斗交互视为脱战（秒） |
+| `PostureRegenRate` | float | 30 | 脱战后的恢复速率（+值/秒） |
+
+**架势恢复只有三条途径（全部收敛到 `ReliefPosture` / 脱战 Tick）：**
+
+```
+① 脱战：Now − LastCombatTime ≥ CombatDisengageTime → 以 PostureRegenRate 每秒恢复
+② 离开 KnockDown（起身收尾）→ ReliefPosture() 回满
+③ 接受投技 / 被处决结束后 → ReliefPosture() 回满（由演出收尾调用）
+```
+
+**`LastCombatTime` 刷新点：受击（`ReceiveDamage` 结算时）与攻击命中他人时。**
 
 #### （3）BPI_CombatFeedBack
 
@@ -184,7 +231,10 @@ PlayPerfectDodgeEndSound() 【内部函数】
 | Ignore  | 忽略   |
 | Hit     | 普通受击 |
 | Blocked | 防御   |
-| BreakPoise | 格挡被击碎（防御崩坏，格挡在正面 Poise>0 时被打破） |
+| BreakPoise | 格挡中韧性（Poise）归零 —— 韧性逻辑，走 `HandleGuardBreak` |
+| BreakPosture | 架势（Posture）归零 —— 架势逻辑，走 `HandleBreakPosture` → KnockDown |
+
+> **共 5 个值。** `BreakPoise` 与 `BreakPosture` 平行：前者是格挡被击碎（HitHeavy），后者是防御崩坏（KnockDown）。两者同时触发时 `BreakPosture` 优先。
 
 ##### 三，E_HitDirection
 

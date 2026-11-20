@@ -43,6 +43,7 @@ README 负责项目入口、历史、规范和接口总览；功能细节按模�
 | 2026.11.17 | 文档拆分 | README 瘦身为「入口 / 历史 / 规范 / 接口总览」，模块内容按 12 个文件拆分到 `docs/`：01 CharacterBase、02 Player、03 EnemyBase、04 WeaponBase、05 独立接口、06 动画通知、07 敌人受击、08 完美闪避、09 完美格挡、10 其他功能、11 运行导图、12 校对清单；00 接口总览保留在 README | 作者 |
 | 2026.11.17 | 格挡破防与完美窗口区间化 | 普通格挡受击 + 格挡破防双分支：`OnDamageApplied` 先分 `HitOutCome`，`Blocked` 走 `HandleGuardHit`，`BreakPoise` 单独路由 `HandleGuardBreak`（ExitGuard → HitHeavy → 全身 `GuardBreak` montage → 收尾回 Locomotion）；完美窗口改为区间 `PerfectGuardWindowStart/End` + `IsPerfectBlock()`（架刀瞬间不再算完美）；格挡 CD 从 `BPC_Combat` 迁入 `BPC_ActionState`（`CanGuard` / `UpdateGuardCD` / `ClearGuardCD`，与闪避 CD 对称），删除 `BPI_Combat.SetLastGuardEndTime`；接口数 99 → 101（ActionState 8→11、Combat 9→8） | 作者 |
 | 2026.11.17 | 输入重绑：Shift 双功能 | 闪避迁至左 Shift：点按（<0.2s）闪避、长按（≥0.2s）奔跑；删除 `IA_Run` / `IA_Dodge` 只留 `IA_Shift`；增强输入事件全部移除，改为 `BP_Player` Tick 纯轮询（`ShiftPressStartTime` 单一写者、松开当帧触发，消除点按延迟）；奔跑为 Locomotion 内速度档位（`E_MoveState.Run`）不进 `BufferInput`；闪避可取消格挡（方案 A：ExitGuard，收尾不回格挡） | 作者 |
+| 2026.11.17 | 玩家架势与 KnockDown 收尾 | `Posture` 与 `Poise` 平行：架势归零返回 `BreakPosture` → `HandleBreakPosture` → 玩家 `KnockDown`；`BreakPoise` 维持原韧性破防 → `HandleGuardBreak`，两者不互相替代；`TakeDamage` 改为接收最终 `PostureDamage`，只负责扣血/韧/架势并返回两个破坏结果，最终倍率由 `ReceiveDamage` 计算；新增 `GetPostureAttack`、`ReliefPosture`；KnockDown 为不可幂等的受控状态，`Start → Loop → End`，Loop 通知启动 Timer，Timer 到期跳 End，Montage Completed 调接口化 `HandleKnockDownCompleted`，内部状态守卫 + `ReliefLocomotion`；正常完成和投技/处决演出结束均可调用该接口；接口数 101 → 105（Attribute 15→17、Combat 8→10） | 作者 |
 
 ---
 
@@ -246,7 +247,7 @@ README 负责项目入口、历史、规范和接口总览；功能细节按模�
 | 接口                       | 目录                                 | 函数数 | 对应实现               |
 | ------------------------ | ---------------------------------- | --- | ------------------ |
 | BPI_CharacterBase        | Code/Interface                     | 10  | 无（纯接口，所有组件获取的统一入口） |
-| BPI_Attribute            | Code/ActorComponent/Attribute      | 15  | BPC_Attribute      |
+| BPI_Attribute            | Code/ActorComponent/Attribute      | 17  | BPC_Attribute      |
 | BPI_CombatFeedBack       | Code/ActorComponent/CombatFeedBack | 6   | BPC_CombatFeedBack |
 | BPI_Motor                | Code/ActorComponent/Motor          | 9   | BPC_Motor          |
 | BPI_WeaponBase           | Code/Weapon                        | 3   | BP_WeaponBase      |
@@ -255,13 +256,13 @@ README 负责项目入口、历史、规范和接口总览；功能细节按模�
 | BPI_ActionState          | Player/Component/ActionState       | 11  | BPC_ActionState    |
 | BPI_BufferInput          | Player/Component/BufferInput       | 3   | BPC_BufferInput    |
 | BPI_CameraDirector       | Player/Component/CameraDirector    | 2   | BPC_CameraDirector |
-| BPI_Combat               | Player/Component/Combat            | 8   | BPC_Combat         |
+| BPI_Combat               | Player/Component/Combat            | 10  | BPC_Combat         |
 | BPI_LockOn               | Player/Component/LockOn            | 5   | BPC_LockOn         |
 | BPI_EnemyBase            | Enemy                              | 2   | BP_EnemyBase       |
 | BPI_AttackTrace          | Enemy/Component/AttackTrace        | 3   | BPC_AttackTrace    |
 | BPI_AI                   | Enemy/Component/AI                 | 9   | BPC_AI             |
 
-合计 101 个接口函数。
+合计 105 个接口函数。
 
 ---
 

@@ -4,7 +4,7 @@
 
 ### 3）完美格挡
 
-> **状态：判定链与反馈已完整（震动 / 音效 / FOV 特写全部接入）；完美格挡反击已完成（详见（12））；普通格挡受击已实现（详见（13），含上半身分离，下半身层未实现）；格挡破防已实现（详见（14））；完美窗口已区间化（起止两值）；格挡 CD 已迁入 `BPC_ActionState`。**
+> **状态：判定链与反馈已完整（震动 / 音效 / FOV 特写全部接入）；完美格挡反击已完成（详见（12））；普通格挡受击已实现（详见（13），含上半身分离，下半身层未实现）；格挡破防已实现（详见（14））；完美窗口已区间化（起止两值）；格挡 CD 已迁入 `BPC_ActionState`；架势归零（`BreakPosture` → KnockDown）已实现，见 [Player · 架势与击倒](02-player.md)。**
 >
 > **⚠️ （1）~（12）只写完美格挡；（13）普通格挡受击；（14）格挡破防 —— 三者共用同一套判定，只在表现层分叉。**
 
@@ -913,10 +913,11 @@ BPC_Combat 分流（按 HitOutCome）
 | --- | --- | --- |
 | 完美格挡 | `OnPerfectBlock` → `HandlePerfectBlock` | ❌ |
 | 普通格挡（未破韧） | `OnDamageApplied(Blocked)` → `HandleGuardHit` | ✅ |
-| 格挡被击碎 | `OnDamageApplied(BreakPoise)` → `HandleGuardBreak` | ❌ |
+| 格挡被击碎（韧性） | `OnDamageApplied(BreakPoise)` → `HandleGuardBreak` | ❌ |
+| 架势归零 | `OnDamageApplied(BreakPosture)` → `HandleBreakPosture` → KnockDown（详见 [Player · 架势与击倒](02-player.md)） | ❌ |
 | 完美闪避 / 无敌帧 / 死亡 | 不触发 `OnDamageApplied` | ❌ |
 
-**所以 `HandleGuardHit` 只处理「未破韧的普通格挡」；「格挡被击碎」由 `BreakPoise` 单独路由，不再在 `HandleGuardHit` 内部按 `PoiseBroken` 二分。**
+**所以 `HandleGuardHit` 只处理「未破韧的普通格挡」；「格挡被击碎」（韧性）由 `BreakPoise` 路由，「架势归零」由 `BreakPosture` 路由，三者互不交叉。**
 
 ##### 13.4 交互约束
 
@@ -1035,6 +1036,8 @@ Montage_BlockHit 的 Slot：DefaultGroup.UpperBody
 #### （14）格挡破防：已实现
 
 格挡成功但 Poise 已耗尽（防御崩坏），通过 `HitOutCome = BreakPoise` 判定，不再走 `Blocked` 分支。
+
+> **⚠️ 与架势（Posture）平行：** `BreakPoise` 只代表**韧性**归零（本节，HitHeavy 路线）；**架势**归零走 `BreakPosture` → KnockDown（见 [Player · 架势与击倒](02-player.md)），两条线互不替代，同时归零时 `BreakPosture` 优先。
 
 ##### 14.1 链路
 

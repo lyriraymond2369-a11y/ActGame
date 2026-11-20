@@ -154,6 +154,8 @@ Tick 每帧：
 | OnAttackWindow   | bool | /             | 开关攻击窗口（由 ANS_AttackWindow 触发） |
 | EnterHit         | E_ActionState，E_HitDirection | /   | 进入受击处理（由 Attribute 的 OnDamageApplied 触发） |
 | TryGuard         | /    | bool          | 格挡入口：`CanGuard`（CD + 受控）+ 状态查重 + 进状态 + `EnterGuard`。**门槛统一在这里，玩家蓝图不存变量** |
+| OnKnockDownLoopStarted | / | / | 击倒蒙太奇进入 Loop 段的通知（由 `AN_KnockDownLoopStart` 触发）：置位 + 启动躺地计时器 |
+| HandleKnockDownCompleted | / | / | 击倒收尾（**接口化**，供投技/处决演出结束后直接调用）：清计时器/标志 + `ReliefPosture` + `UpdateGuardCD` + `ReliefLocomotion`。开头有状态守卫（仅 `KnockDown` 放行） |
 
 > **位移不再经过 Combat。** `ANS_Move` 直接调 `BPI_Motor.StartMotion` / `StopMotion`，
 > Combat 只负责在动作开始时用 `SetMotionProfile` 下发速度和方向。
@@ -187,7 +189,7 @@ Tick 每帧：
 | Guard      | 格挡状态                     |
 | HitLight   | 轻受击（受控）                  |
 | HitHeavy   | 重受击（受控）                  |
-| KnockDown  | 倒地（受控）                   |
+| KnockDown  | 倒地（受控）。**禁止幂等**：`KnockDown → KnockDown` 在 `TryEnterState` 公共闸门返回 false（倒地期间再触发不重启蒙太奇）；可被 `Dead` 升级 |
 | Dead       | 死亡（受控，绝对终态）              |
 
 ##### 二，E_CounterType（反击窗口类型）
@@ -250,7 +252,90 @@ Tick 每帧：
 | ---- | ---- |
 | Idle | 站立   |
 | Walk | 走路   |
-| Run  | 奔跑   |
+| Run  | 奔跑（Shift 长按 ≥0.2s 的速度档位，见输入映射小节） |
+
+---
+
+### 3）架势与击倒（Posture & KnockDown）
+
+> **状态：已实现。** 架势是防御结构值（满 = 稳，0 = 崩），与韧性（Poise）平行；归零 → `BreakPosture` → 玩家倒地。姿态变量与恢复规则见 [CharacterBase · 架势](01-character-base.md)。
+
+#### 3.1 分流：BreakPoise 与 BreakPosture 平行
+
+```text
+OnDamageApplied 分流（BPC_Combat）：
+  ├─ Ignore        → 无
+  ├─ BreakPosture  → HandleBreakPosture   ← 架势归零 → KnockDown
+  ├─ BreakPoise    → HandleGuardBreak     ← 韧性破防 → HitHeavy + GuardBreak（原逻辑不动）
+  ├─ Blocked       → HandleGuardHit       ← 纯普通格挡
+  └─ Hit           → EnterHit             ← 普通受击（IsBroken → HitHeavy）
+```
+
+#### 3.2 `HandleBreakPosture` 与 KnockDown 播放结构
+
+```text
+HandleBreakPosture
+  ├─ ExitGuard
+  ├─ TryEnterState(KnockDown)             ← 禁止幂等：已在 KnockDown/Dead 时返回 false → 直接 Return
+  ├─ ClearTimer(KnockDownTimerHandle)
+  ├─ bKnockDownLoopStarted = false
+  └─ PlayReactionMontage("KnockDown" 行, bReliefOriginal = false)
+       └─ 播放失败（无行/无蒙太奇）→ SetState(Locomotion) 兜底
+```
+
+**击倒蒙太奇为 `Start → Loop（自循环）→ End` 三段结构：**
+
+```text
+Start（倒地，播一次）→ Loop（躺地，自循环）→ End（起身，播一次）
+
+Loop 段第一帧：AN_KnockDownLoopStart
+  → BPI_Combat.OnKnockDownLoopStarted()
+       ├─ 状态 == KnockDown？  否 → Return
+       ├─ bKnockDownLoopStarted 防重
+       └─ SetTimer(KnockDownLoopDuration)（默认 1.5s）
+
+Timer 到期（内联事件）：
+  ├─ 状态 == KnockDown？       否 → Return（死亡/处决/投技接管后直接退出）
+  ├─ IsPlaying(KnockDownMontage)？否 → Return（蒙太奇已被 Stop）
+  └─ Montage Jump to Section("End")
+```
+
+**Timer 必须在 Loop 通知里启动，不能在 `HandleBreakPosture` 里启动** —— 否则 Start 段时长会被算进躺地时间。
+
+#### 3.3 `HandleKnockDownCompleted`（接口，收尾）
+
+```text
+HandleKnockDownCompleted()（BPI_Combat 接口）
+  ├─【0】状态守卫：当前不是 KnockDown → Return
+  │        （共用 OnCompleted 路径时，普通受击播完会被这行拦下）
+  ├─【1】ClearTimer(KnockDownTimerHandle)
+  ├─【2】bKnockDownLoopStarted = false
+  ├─【3】Attribute.ReliefPosture()            ← 架势回满
+  ├─【4】ActionState.UpdateGuardCD(Now)       ← 格挡 CD 收尾起算
+  └─【5】ReliefLocomotion()                   ← Combat 内部函数（SetState(Locomotion) + 其他复位）
+```
+
+**两个入口：**
+
+```text
+正常完成：PlayReactionMontage 的 On Completed（未被打断）→ 直接调 HandleKnockDownCompleted
+投技/处决：演出蒙太奇播完后由演出流程直接调用（先 Stop 击倒蒙太奇，再调接口）
+被打断（死亡等）：On Completed 不触发 → 什么都不做（Dead 是绝对终态）
+```
+
+#### 3.4 验证
+
+```text
+□ 格挡中 Poise 归零 → BreakPoise → HitHeavy + GuardBreak（与架势无关）
+□ Posture 归零（格挡/命中共通）→ BreakPosture → KnockDown
+□ 同一击两者同时归零 → BreakPosture 优先
+□ 倒地期间挨打 → 状态不变、蒙太奇不重启（禁幂等）
+□ 倒地期间被打死 → 进 Dead，无收尾触发
+□ Start 段不被计入躺地时间（Timer 从 Loop 通知起算）
+□ Loop 多次进入不重复 SetTimer
+□ End 播完 → 收尾（架势满、CD 启动、回 Locomotion）
+□ 普通受击播完不误触发 KnockDown 收尾（状态守卫）
+```
 
 ---
 
