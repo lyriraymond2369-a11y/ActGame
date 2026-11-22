@@ -19,6 +19,7 @@
 | GetAttributeComponent      | /                            | BPC_Attribute 对象引用         | 获取角色的 BPC_Attribute      |
 | GetCombatFeedbackComponent | /                            | BPC_CombatFeedBack 对象引用    | 获取角色的 BPC_CombatFeedBack |
 | GetMotorComponent          | /                            | BPC_Motor 对象引用             | 获取角色的 BPC_Motor          |
+| GetMotionWarpingComponent  | /                            | MotionWarping 组件引用          | 获取角色的动作扭曲组件（处决/投技对齐用） |
 | GetCharacterMovement       | /                            | CharacterMovementComponent | 获取角色的移动组件                |
 | GetMeshComponent           | /                            | SkeletalMeshComponent      | 获取角色的骨骼网格体组件             |
 | GetHitBoxComponent         | /                            | BoxComponent               | 获取角色的受击盒                 |

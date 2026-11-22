@@ -44,6 +44,9 @@
 | OnAttackWindow | bool                                  | /    | 开关攻击窗口                |
 | AttackByType   | E_AttackType                          | /    | 根据攻击类型发动攻击            |
 | PlayHitMontage | E_AIState（受击等级），E_HitDirection（受击方向） | bool | 查蒙太奇表并播放敌人的受击蒙太奇      |
+| OnGrabContact  | /                                     | /    | 投技接触帧（由 `AN` 经接口触发，**占位**） |
+| OnGrabDamage   | /                                     | /    | 投技打击帧伤害结算入口（由 `AN` 经接口触发，**占位**） |
+| OnGrabLoopStarted | /                                  | /    | 投技蒙太奇进入 Loop 段的通知（由 `AN` 触发），启动躺地/演出计时器 |
 
 #### （3）BPI_AI
 
