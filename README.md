@@ -47,6 +47,7 @@ README 负责项目入口、历史、规范和接口总览；功能细节按模�
 | 2026.11.22 | 敌人投技 / 玩家处决（测试版·变量化） | 投技变量化：新增 `DT_Executions` 数据表与 `ST_GrabMoveData` 结构体（`MoveType` / `StartSectionName` / `EndSectionName` / `TargetLocationOffset` / `RandomWeight` / `bEnabled` 等），按权重随机选行播放；`PlayExecutionVictim(RowName)` 改为带行名参数、无返回值的纯播放器；目标位置按受击者自身三轴计算（X 前后 / Y 左右 / Z 上下）；非所有处决 Montage 都是三件套，`StartSectionName` 指定起始片段，`EndSectionName` 指定 Loop 段跳转段；敌人播放完 Montage 后经 `BPC_AI` 回 `Idle`；新增 `BPI_Execution` 接口（`CanBeGrabbed` / `PlayExecutionVictim` / `JumpExecutionToEnd` / `HandleExecutionCompleted`）、`BPI_CharacterBase.GetMotionWarpingComponent`、`BPI_AttackTrace.OnGrabContact` / `OnGrabDamage`（占位）/ `OnGrabLoopStarted`；接口数 105 → 113（Execution +4、CharacterBase 10→11、AttackTrace 3→6） | 作者  |
 | 2026.11.22 | 击倒音效 | 新增 `MS_Knockdown_Impact`（架势归零倒地瞬间：肉体闷响 + 地面撞击双层 MetaSound）与 `MS_Grab_Impact`（投技命中帧：摔投主体 + 锐利瞬态 + 噪声爆发三层 MetaSound），随机化音高/起点；`BPI_CombatFeedBack` 新增 `PlayKnockdownSound` / `PlayGrabImpactSound`，由 `HandleBreakPosture` 与 `OnGrabDamage` 经接口触发；起身音暂缓；接口数 113 → 115（CombatFeedBack 6→8） | 作者  |
 | 2026.11.23 | 玩家死亡状态 | `BPI_Attribute.IsDead` 为死亡唯一判据，`BPC_Combat` Tick 守卫式轮询（不满足不修改），`TryEnterState(Dead)` 为绝对终态；新增 `E_DeathType`（None / LightHit / HeavyHit / KnockDown / Execution），死亡蒙太奇全部放入 `DT_Reactions`（`Death_Light` / `Death_Heavy` / `Death_KnockDown` / `Death_Execution` / `Death_Default`），复用 `ST_AttackData` + `BPC_Motor` 播放通道处理位移；致死入口在受击分发最前判定 `IsDead`、写 `PendingDeathType` 后直接返回，不进普通受击/击倒流程；`HandleKnockDownCompleted` / `HandleExecutionCompleted` 加 `IsDead` 守卫，死人绝不回 `Locomotion`；接口数不变 115 | 作者  |
+| 2026.11.23 | 处决伤害与击倒反馈 | 处决伤害：`BPI_Attribute.ReceiveExecutionDamage(HealthPercent)` 按 `MaxHealth × Percent` 直扣、无视防御判定，百分比存 `ST_GrabMoveData.ExecutionHealthPercent`，由敌人 `OnGrabDamage` 在打击帧调用一次（`bGrabDamageApplied` 防重），`E_HitOutCome` 末尾追加 `Execution`；击倒反馈改为**受击者 `BPC_CombatFeedBack` 驱动**：`ApplyAttack` 仅调伤害与转发反馈（`ReceiveDamage` → 目标 `GetCombatFeedbackComponent` → `PlayHitFeedback`），`PlayHitFeedback`（5 输入不变）内 `BreakPosture` 分支 → `HandleKnockdownFeedback`（`MS_Knockdown_Impact` + CameraDirector `PlayKnockdownFOV`（`E_CloseUpPhase` 体系）+ 双方 `PlayHitStop` + 局部慢速）；新增 `BPI_CombatFeedBack.PlayLocalSlowMo(OtherActor, Scale, Duration)`（编排双 Actor 慢速）与 `ApplyLocalSlowMo(Scale, Duration)`（单体执行，防递归）；`BPI_CameraDirector.PlayKnockdownFOV`；受击者 `HandleBreakPosture` 删除全部表现调用只留状态与 Montage；接口数 115 → 119（Attribute 17→18、CombatFeedBack 8→10、CameraDirector 2→3） | 作者  |
 
 ---
 
@@ -174,6 +175,21 @@ README 负责项目入口、历史、规范和接口总览；功能细节按模�
 ⑥ 音效接口与时间接口分离，一个接口只做一件事
    PlayEnemySlowMo 只管时间膨胀，不播任何音效
    → 否则共用它的另一个机制（完美格挡）会误播别人的音效
+
+⑦ 全体敌人慢速与单体慢速必须使用不同接口
+   PlayEnemySlowMo 只用于完美格挡 / 完美闪避奖励，作用对象是全体敌人
+   PlayLocalSlowMo(OtherActor, Scale, Duration) 只用于击倒 / 处决等局部打击感，
+   负责同时安排受击者与攻击者两个 Actor 的局部慢速
+   → 禁止用 PlayEnemySlowMo 替代局部时间膨胀，避免影响无关敌人
+   → 单体执行拆分为 ApplyLocalSlowMo(Scale, Duration)（外部只走它），
+     由 PlayLocalSlowMo 内部派发，避免 OtherActor ↔ Self 递归调用
+
+⑧ 顿帧与局部慢速必须串行
+   ApplyLocalSlowMo 若发现目标仍在 HitStop 窗口内，只记录待执行参数并立即结束当前函数
+   BPC_CombatFeedBack Tick 在 GetGameTime >= HitStopEndTime 后启动待执行慢速
+   → 不新增“是否正在顿帧”布尔，统一用 HitStopEndTime 判断
+   → 待执行慢速必须由发起方组件自动消费并清空，不能依赖外部再次调用
+   → 恢复时必须还原到慢速前保存的原始 Dilation，禁止把减速后的值当新的原始值
 ```
 
 ### 5）位移与冲量
@@ -246,15 +262,15 @@ README 负责项目入口、历史、规范和接口总览；功能细节按模�
 | 接口                       | 目录                                 | 函数数 | 对应实现               |
 | ------------------------ | ---------------------------------- | --- | ------------------ |
 | BPI_CharacterBase        | Code/Interface                     | 11  | 无（纯接口，所有组件获取的统一入口） |
-| BPI_Attribute            | Code/ActorComponent/Attribute      | 17  | BPC_Attribute      |
-| BPI_CombatFeedBack       | Code/ActorComponent/CombatFeedBack | 8   | BPC_CombatFeedBack |
+| BPI_Attribute            | Code/ActorComponent/Attribute      | 18  | BPC_Attribute      |
+| BPI_CombatFeedBack       | Code/ActorComponent/CombatFeedBack | 10  | BPC_CombatFeedBack |
 | BPI_Motor                | Code/ActorComponent/Motor          | 9   | BPC_Motor          |
 | BPI_WeaponBase           | Code/Weapon                        | 3   | BP_WeaponBase      |
 | BPI_GameState            | Code/GameState                     | 3   | 待接入                |
 | BPI_Player               | Player                             | 12  | BP_Player          |
 | BPI_ActionState          | Player/Component/ActionState       | 11  | BPC_ActionState    |
 | BPI_BufferInput          | Player/Component/BufferInput       | 3   | BPC_BufferInput    |
-| BPI_CameraDirector       | Player/Component/CameraDirector    | 2   | BPC_CameraDirector |
+| BPI_CameraDirector       | Player/Component/CameraDirector    | 3   | BPC_CameraDirector |
 | BPI_Combat               | Player/Component/Combat            | 10  | BPC_Combat         |
 | BPI_LockOn               | Player/Component/LockOn            | 5   | BPC_LockOn         |
 | BPI_EnemyBase            | Enemy                              | 2   | BP_EnemyBase       |
@@ -262,7 +278,7 @@ README 负责项目入口、历史、规范和接口总览；功能细节按模�
 | BPI_AI                   | Enemy/Component/AI                 | 9   | BPC_AI             |
 | BPI_Execution            | Player/Component/Combat            | 4   | BPC_Combat         |
 
-合计 115 个接口函数。
+合计 119 个接口函数。
 
 ---
 
