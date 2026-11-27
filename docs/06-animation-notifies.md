@@ -33,3 +33,31 @@
 
 ---
 
+## 7-1，敌人侧动画通知与职责
+
+> 敌人与玩家共用动画通知链路，但**预警与倒地演出是敌人专属通知**：玩家攻击 Montage 不放预警通知，避免玩家自身触发红光。
+
+| 通知                          | 类型          | 调用的接口                                   | 职责                                                       |
+| --------------------------- | ----------- | --------------------------------------- | -------------------------------------------------------- |
+| `ANS_AttackWarning`         | NotifyState | `BPI_CombatFeedBack.SetAttackWarning(bool)` | 覆盖攻击前摇段：Begin 开启全身红光 + `Custom Depth` 描边 + 预警音，End 全部关闭 |
+| `ANS_Enemy_AttackWindow`    | NotifyState | `BPI_AttackTrace.OnAttackWindow(bool)`  | 敌人攻击判定窗口开合（与玩家 `ANS_AttackWindow` 同一职责位，按敌人 Montage 配置） |
+| `ANS_Telegraph`             | NotifyState | 依具体实现（预警段计时/表现开关）                        | 攻击预警段的区间标记，用于驱动预警表现时长（与 `ANS_AttackWarning` 配合或替代） |
+| `AN_Enemy_KnockDownLoopStart` | Notify    | `BPI_AttackTrace.OnKnockDownLoopStarted` | 敌人倒地 Montage 进入 Loop：启动倒地计时器，到期跳转 `End`                     |
+
+**要点：**
+
+```
+① ANS_AttackWarning 只放在敌人攻击 Montage，玩家攻击 Montage 不放
+   → 否则玩家攻击时自身也会发红光
+
+② 预警通知的位置由动画师决定：起点在前摇 25%~35% 处，终点与攻击窗口开启帧对齐
+   → 红光灭 = 判定即将生效，是给玩家的"该防了"信号
+
+③ AN_Enemy_KnockDownLoopStart 只发通知，不做 SetTimer / JumpToSection
+   → Timer 与跳段全部由 BPC_AttackTrace 内部处理
+
+④ 敌人播完倒地后保持受控，不回流 Chase/Idle（死亡优先）
+```
+
+---
+

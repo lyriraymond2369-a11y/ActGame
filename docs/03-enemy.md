@@ -47,6 +47,8 @@
 | OnGrabContact  | /                                     | /    | 投技接触帧（由 `AN` 经接口触发，**占位**） |
 | OnGrabDamage   | /                                     | /    | 投技打击帧伤害结算入口（由 `AN` 经接口触发，**占位**） |
 | OnGrabLoopStarted | /                                  | /    | 投技蒙太奇进入 Loop 段的通知（由 `AN` 触发），启动躺地/演出计时器 |
+| OnKnockDownLoopStarted | /                              | /    | 敌人倒地 Montage 进入 Loop 段的通知（由 `AN` 触发），启动倒地计时器 |
+| PlayEnemyKnockDown      | /                              | /    | 播放敌人专用倒地 Montage，不带返回值（使用 `PlayMontage`）          | | /                                  | /    | 投技蒙太奇进入 Loop 段的通知（由 `AN` 触发），启动躺地/演出计时器 |
 
 #### （3）BPI_AI
 

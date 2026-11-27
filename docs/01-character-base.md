@@ -51,7 +51,10 @@
 | ExitGuard        | /                                    | /                      | 退出格挡                                            |
 | NotifyDodgeStart | float（Time）                          | /                      | 记录闪避起手时刻，供完美闪避窗口判定使用                            |
 | SetInvincible    | bool（bInvincible）                     | /                      | 开关无敌。由 `ANS_IFrame` 的 Begin / End 调用              |
-| EndPerfectDodge  | /                                    | /                      | 完美闪避收尾：若仍在无敌则关无敌并补一段尾巴。由 Combat 调用 |
+| EndPerfectDodge  | /                                     | /                      | 完美闪避收尾：若仍在无敌则关无敌并补一段尾巴。由 Combat 调用 |
+| ReceiveExecutionDamage | float（HealthPercent）   | bool（bDead）          | 处决/投技专用伤害：按 MaxHealth × HealthPercent 直扣，不走防御减免；生命值变化后广播 OnHealthChanged |
+| GetHealthPercent | /                                   | float（0~1）            | 当前血量比例，供 HUD 等 UI 层读取（不暴露原始值）             |
+| GetPosturePercent| /                                   | float（0~1）            | 当前架势比例，供 HUD 等 UI 层读取（不暴露原始值）             |  | /                                    | /                      | 完美闪避收尾：若仍在无敌则关无敌并补一段尾巴。由 Combat 调用 |
 
 `ReceiveDamage` **的四个输出含义：**
 
@@ -166,7 +169,13 @@ Posture 满值 = 稳，0 = 崩（初始 = MaxPosture）
 | EndHitStop      | /                                             | /   | 离开顿帧                                          |
 | PlayEnemySlowMo | float（Scale），float（Duration） | /   | **只放慢全场敌人，不播任何音效**（自带恢复计时）。完美闪避传 (0.1, 0.5)，完美格挡传 (0.15, 0.12) |
 | PlayPerfectDodgeStartSound | float（Duration）                  | /   | 播放完美闪避开始音，并在 **Duration 后自动播结束音**（内部计时，见下） |
-| PlayPerfectBlockSound | /                                     | /   | 播放完美格挡撞击音（单一瞬态，无尾音计时）                |
+| PlayPerfectBlockSound | /                                     | /   | 播放完美格挡撞击音（单一瞬间态，无尾音计时）               |
+| PlayLocalSlowMo       | float（Scale），float（Duration）   | /   | 对单个 Actor 播放局部时间膨胀，击倒/处决等局部打击感用      |
+| ApplyLocalSlowMo      | float（Scale），float（Duration）   | /   | 由 PlayLocalSlowMo 派发，对当前 Actor 单体执行，防递归        |
+| PlayKnockdownSound    | /                                     | /   | 架势归零倒地瞬间的击倒音效（MS_Knockdown_Impact）           |
+| PlayGrabImpactSound   | /                                     | /   | 投技命中帧音效（MS_Grab_Impact）                              |
+| PlayDeathSound        | /                                     | /   | 死亡瞬间音效（MS_Death_Impact）                               |
+| SetAttackWarning      | bool（bActive）                     | /   | 开关攻击预警：开启全身红光+描边并播放预警音，关闭恢复         | | /                                     | /   | 播放完美格挡撞击音（单一瞬态，无尾音计时）                |
 
 **音效接口与慢动作接口是分离的两组，不能合并：**
 
