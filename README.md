@@ -49,6 +49,7 @@ README 负责项目入口、历史、规范和接口总览；功能细节按模�
 | 2026.11.23 | 玩家死亡状态               | `BPI_Attribute.IsDead` 为死亡唯一判据，`BPC_Combat` Tick 守卫式轮询（不满足不修改），`TryEnterState(Dead)` 为绝对终态；新增 `E_DeathType`（None / LightHit / HeavyHit / KnockDown / Execution），死亡蒙太奇全部放入 `DT_Reactions`（`Death_Light` / `Death_Heavy` / `Death_KnockDown` / `Death_Execution` / `Death_Default`），复用 `ST_AttackData` + `BPC_Motor` 播放通道处理位移；致死入口在受击分发最前判定 `IsDead`、写 `PendingDeathType` 后直接返回，不进普通受击/击倒流程；`HandleKnockDownCompleted` / `HandleExecutionCompleted` 加 `IsDead` 守卫，死人绝不回 `Locomotion`；接口数不变 115                                                                                                                                                                                                                                                                                                                                                            | 作者  |
 | 2026.11.25 | 处决伤害与击倒反馈            | 处决伤害：`BPI_Attribute.ReceiveExecutionDamage(HealthPercent)` 按 `MaxHealth × Percent` 直扣、无视防御判定，百分比存 `ST_GrabMoveData.ExecutionHealthPercent`，由敌人 `OnGrabDamage` 在打击帧调用一次（`bGrabDamageApplied` 防重），`E_HitOutCome` 末尾追加 `Execution`；击倒反馈改为**受击者** `BPC_CombatFeedBack` **驱动**：`ApplyAttack` 仅调伤害与转发反馈（`ReceiveDamage` → 目标 `GetCombatFeedbackComponent` → `PlayHitFeedback`），`PlayHitFeedback`（5 输入不变）内 `BreakPosture` 分支 → `HandleKnockdownFeedback`（`MS_Knockdown_Impact` + CameraDirector `PlayKnockdownFOV`（`E_CloseUpPhase` 体系）+ 双方 `PlayHitStop` + 局部慢速）；新增 `BPI_CombatFeedBack.PlayLocalSlowMo(OtherActor, Scale, Duration)`（编排双 Actor 慢速）与 `ApplyLocalSlowMo(Scale, Duration)`（单体执行，防递归）；`BPI_CameraDirector.PlayKnockdownFOV`；受击者 `HandleBreakPosture` 删除全部表现调用只留状态与 Montage；接口数 115 → 119（Attribute 17→18、CombatFeedBack 8→10、CameraDirector 2→3） | 作者  |
 | 2026.11.25 | 玩家 HUD 血条与架势条 | 新增 `WBPI_PlayerHUD.InitializeHUD(AttributeComponent)` 与 `RefreshHealthAndPosture` 接口；`BP_PlayerController.OnPossess` 创建 `WBP_PlayerHUD` 并明确 `AddToViewport`，通过 `BPI_CharacterBase.GetAttributeComponent` 初始化；HUD 改用每帧刷新以规避 `BPC_Attribute.BeginPlay` 晚于 `OnPossess` 的初始化时序，血量/架势比例读取统一走 `BPI_Attribute.GetHealthPercent` / `GetPosturePercent`，使用脏值比较避免无变化时重复 `SetPercent`；`OnHealthChanged` / `OnPostureChanged` 作为 Attribute 事件分发器保留，不由 HUD 绑定；架势条显示剩余比例；接口数 119 → 123（Attribute 18→20、WBPI_PlayerHUD +2） | 作者  |
+| 2026.11.25 | 敌人击倒状态 | 敌人受击结果统一从 `BPC_Attribute.OnDamageApplied` 事件分发器获取，`BreakPosture` 不使用 `HitStamp` / `bHitPending` 重播机制，击倒禁止幂等；新增敌人专用 `DT_EnemyReactions`，不复用玩家 `DT_Reactions`；敌人倒地 Montage 采用 `Start → Loop → End`，`AN_Enemy_KnockDownLoopStart` 进入 Loop 后启动 Timer，Timer 到期跳转 `End`；`BPC_AttackTrace.PlayEnemyKnockDown` 为无返回值【事件】，使用 `PlayMontage` 播放；Montage 完成通过 `BPC_AttackTrace.OnMontageEnd` 事件分发器结束 BT Task，完成后 `ReliefPosture` → `AI_ReturnToInitialState`；AI 状态与装饰器负责过滤，执行逻辑不重复查询 AIState；死亡优先于击倒，死亡时清理倒地 Timer，不回流 Chase/Idle | 作者  |
 
 ---
 
@@ -275,12 +276,12 @@ README 负责项目入口、历史、规范和接口总览；功能细节按模�
 | BPI_Combat               | Player/Component/Combat            | 10  | BPC_Combat         |
 | BPI_LockOn               | Player/Component/LockOn            | 5   | BPC_LockOn         |
 | BPI_EnemyBase            | Enemy                              | 2   | BP_EnemyBase       |
-| BPI_AttackTrace          | Enemy/Component/AttackTrace        | 6   | BPC_AttackTrace    |
+| BPI_AttackTrace          | Enemy/Component/AttackTrace        | 8   | BPC_AttackTrace    |
 | BPI_AI                   | Enemy/Component/AI                 | 9   | BPC_AI             |
 | BPI_Execution            | Player/Component/Combat            | 4   | BPC_Combat         |
 | WBPI_PlayerHUD           | Player/UI/PlayerHUD                | 2   | WBP_PlayerHUD      |
 
-合计 123 个接口函数。
+合计 125 个接口函数。
 
 ---
 
