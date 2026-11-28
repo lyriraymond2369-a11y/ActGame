@@ -175,7 +175,8 @@ Posture 满值 = 稳，0 = 崩（初始 = MaxPosture）
 | PlayKnockdownSound    | /                                     | /   | 架势归零倒地瞬间的击倒音效（MS_Knockdown_Impact）           |
 | PlayGrabImpactSound   | /                                     | /   | 投技命中帧音效（MS_Grab_Impact）                              |
 | PlayDeathSound        | /                                     | /   | 死亡瞬间音效（MS_Death_Impact）                               |
-| SetAttackWarning      | bool（bActive）                     | /   | 开关攻击预警：开启全身红光+描边并播放预警音，关闭恢复         | | /                                     | /   | 播放完美格挡撞击音（单一瞬态，无尾音计时）                |
+| SetAttackWarning      | bool（bActive）                     | /   | 开关攻击预警：开启全身红光+描边并播放预警音，关闭恢复         |
+| SetKnockdownFeedbackPlayed | bool（bPlayed）                 | /   | 设置/复位击倒表现标记：false 允许下一次击倒播放表现，true 表示本周期已播放 | | /                                     | /   | 播放完美格挡撞击音（单一瞬态，无尾音计时）                |
 
 **音效接口与慢动作接口是分离的两组，不能合并：**
 

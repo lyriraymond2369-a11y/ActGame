@@ -68,6 +68,7 @@
 | HitLight  | HitHeavy  | 4  | true（升级）   |
 | HitHeavy  | HitLight  | 3  | false（降级）  |
 | HitHeavy  | Chase     | 3  | false（转出）  |
+| KnockDown | KnockDown | 3  | false（重复进入拒绝） |
 | KnockDown | Attack    | 3  | false（转出）  |
 | 任意非 Dead  | Dead      | 1  | true      |
 | Dead      | Dead      | 1  | **false** |
@@ -213,7 +214,7 @@ HitOutCome == BreakPosture  →  AI_TryEnterState(KnockDown)
 
 - **不使用 `HitStamp` / `bHitPending`**：击倒禁止幂等，不走受击重播机制
 - `Dead` 优先于 `KnockDown`：一次攻击若造成架势归零且血量归零，进入 `Dead`，不进入 `KnockDown`
-- 状态由行为树装饰器过滤，执行逻辑不重复查询 `AIState`
+- 状态由 `AI_TryEnterState` 守卫：当前已是 `KnockDown` 时返回 false，不重复进入；执行逻辑尊重返回值，不重复查询 `AIState`
 
 ##### （8-4）BT 流程与倒地计时器
 
@@ -244,6 +245,7 @@ HitOutCome == BreakPosture  →  AI_TryEnterState(KnockDown)
 □ 倒地期间 BTS 不进入 Chase/Attack；不重新申请令牌
 □ 倒地结束后有目标回 Chase、无目标回 Idle
 □ 倒地中被击杀：Timer 清除，不执行 ReliefPosture，不回流，进入死亡流程
+□ KnockDown 期间再次收到 BreakPosture：AI_TryEnterState 返回 false，不重复触发倒地表现
 ```
 
 ---
